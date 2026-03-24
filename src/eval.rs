@@ -13,20 +13,20 @@ pub const CHECKMATE: i32 = 1_000_000;
 pub const DRAW: i32 = 0;
 
 // v0.0.4 Evaluation Constants
-pub const PASSED_PAWN_BONUS: [i32; 8] = [0, 10, 20, 30, 50, 75, 100, 0];
+pub const PASSED_PAWN_BONUS: [i32; 8] = [0, 20, 40, 60, 100, 150, 200, 0];
 pub const DOUBLED_PAWN_PENALTY: i32 = -20;
 pub const ISOLATED_PAWN_PENALTY: i32 = -15;
 pub const ROOK_OPEN_FILE_BONUS: i32 = 25;
 pub const ROOK_SEMI_OPEN_FILE_BONUS: i32 = 10;
 pub const BISHOP_PAIR_BONUS: i32 = 50;
-pub const KING_ATTACKER_PENALTY: i32 = -10;
-pub const KING_SHIELD_BONUS: i32 = 10;
+pub const KING_ATTACKER_PENALTY: i32 = -30;
+pub const KING_SHIELD_BONUS: i32 = 15;
 
 // v0.0.7 Evaluation Constants
 // Index: 0=none, 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king
-pub const MOBILITY_WEIGHT: [i32; 7] = [0, 1, 4, 4, 2, 1, 0];
-pub const KNIGHT_OUTPOST_BONUS: i32 = 30;
-pub const BISHOP_OUTPOST_BONUS: i32 = 20;
+pub const MOBILITY_WEIGHT: [i32; 7] = [0, 2, 8, 8, 4, 2, 0];
+pub const KNIGHT_OUTPOST_BONUS: i32 = 50;
+pub const BISHOP_OUTPOST_BONUS: i32 = 35;
 pub const DOUBLED_ROOKS_BONUS: i32 = 20;
 pub const ROOK_SEVENTH_RANK_BONUS: i32 = 30;
 pub const UNDEVELOPED_PIECE_PENALTY: i32 = -10;
@@ -818,14 +818,14 @@ mod tests {
 
     #[test]
     fn eval_constants_correct() {
-        assert_eq!(PASSED_PAWN_BONUS, [0, 10, 20, 30, 50, 75, 100, 0]);
+        assert_eq!(PASSED_PAWN_BONUS, [0, 20, 40, 60, 100, 150, 200, 0]);
         assert_eq!(DOUBLED_PAWN_PENALTY, -20);
         assert_eq!(ISOLATED_PAWN_PENALTY, -15);
         assert_eq!(ROOK_OPEN_FILE_BONUS, 25);
         assert_eq!(ROOK_SEMI_OPEN_FILE_BONUS, 10);
         assert_eq!(BISHOP_PAIR_BONUS, 50);
-        assert_eq!(KING_ATTACKER_PENALTY, -10);
-        assert_eq!(KING_SHIELD_BONUS, 10);
+        assert_eq!(KING_ATTACKER_PENALTY, -30);
+        assert_eq!(KING_SHIELD_BONUS, 15);
     }
 
     // === Part 6 — Evaluation Sanity Checks (REVIEW_v004) ===
@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn mobility_weight_correct() {
-        assert_eq!(MOBILITY_WEIGHT, [0, 1, 4, 4, 2, 1, 0]);
+        assert_eq!(MOBILITY_WEIGHT, [0, 2, 8, 8, 4, 2, 0]);
     }
 
     #[test]
@@ -903,8 +903,8 @@ mod tests {
 
     #[test]
     fn outpost_constants_correct() {
-        assert_eq!(KNIGHT_OUTPOST_BONUS, 30);
-        assert_eq!(BISHOP_OUTPOST_BONUS, 20);
+        assert_eq!(KNIGHT_OUTPOST_BONUS, 50);
+        assert_eq!(BISHOP_OUTPOST_BONUS, 35);
     }
 
     #[test]
@@ -943,9 +943,9 @@ mod tests {
 
     #[test]
     fn v007_constants_complete() {
-        assert_eq!(MOBILITY_WEIGHT, [0, 1, 4, 4, 2, 1, 0]);
-        assert_eq!(KNIGHT_OUTPOST_BONUS, 30);
-        assert_eq!(BISHOP_OUTPOST_BONUS, 20);
+        assert_eq!(MOBILITY_WEIGHT, [0, 2, 8, 8, 4, 2, 0]);
+        assert_eq!(KNIGHT_OUTPOST_BONUS, 50);
+        assert_eq!(BISHOP_OUTPOST_BONUS, 35);
         assert_eq!(DOUBLED_ROOKS_BONUS, 20);
         assert_eq!(ROOK_SEVENTH_RANK_BONUS, 30);
         assert_eq!(UNDEVELOPED_PIECE_PENALTY, -10);

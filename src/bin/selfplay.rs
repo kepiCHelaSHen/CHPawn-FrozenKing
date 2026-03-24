@@ -73,7 +73,7 @@ fn main() {
             }
 
             let is_white = pos.turn() == Color::White;
-            let tm = TimeManager::new(0, 0, 0, Some(movetime_ms), is_white, stop_flag.clone());
+            let tm = TimeManager::new(0, 0, 0, 0, 0, Some(movetime_ms), is_white, stop_flag.clone());
             let tb_ref = if tb.is_available() { Some(&tb) } else { None };
 
             let mut noop = |_: u8, _: i32, _: u64, _: u64, _: &Move| {};

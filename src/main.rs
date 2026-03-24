@@ -76,10 +76,11 @@ fn main() {
 
                 let is_white = position.turn() == Color::White;
                 let tm = if let Some(mt) = go_params.movetime {
-                    TimeManager::new(0, 0, 0, Some(mt), is_white, stop_flag.clone())
+                    TimeManager::new(0, 0, 0, 0, 0, Some(mt), is_white, stop_flag.clone())
                 } else if go_params.wtime > 0 || go_params.btime > 0 {
                     TimeManager::new(
                         go_params.wtime, go_params.btime,
+                        go_params.winc, go_params.binc,
                         go_params.movestogo, None,
                         is_white, stop_flag.clone(),
                     )
@@ -133,6 +134,8 @@ fn main() {
 struct GoParams {
     wtime: u64,
     btime: u64,
+    winc: u64,
+    binc: u64,
     movestogo: u64,
     movetime: Option<u64>,
     depth: u8,
@@ -142,6 +145,8 @@ fn parse_go(tokens: &[&str]) -> GoParams {
     let mut params = GoParams {
         wtime: 0,
         btime: 0,
+        winc: 0,
+        binc: 0,
         movestogo: 0,
         movetime: None,
         depth: 0,
@@ -158,6 +163,14 @@ fn parse_go(tokens: &[&str]) -> GoParams {
                 params.btime = tokens[i + 1].parse().unwrap_or(0);
                 i += 2;
             }
+            "winc" if i + 1 < tokens.len() => {
+                params.winc = tokens[i + 1].parse().unwrap_or(0);
+                i += 2;
+            }
+            "binc" if i + 1 < tokens.len() => {
+                params.binc = tokens[i + 1].parse().unwrap_or(0);
+                i += 2;
+            }
             "movestogo" if i + 1 < tokens.len() => {
                 params.movestogo = tokens[i + 1].parse().unwrap_or(0);
                 i += 2;
@@ -171,7 +184,6 @@ fn parse_go(tokens: &[&str]) -> GoParams {
                 i += 2;
             }
             "infinite" => {
-                // No time limit
                 i += 1;
             }
             _ => {
