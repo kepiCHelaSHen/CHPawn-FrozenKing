@@ -69,6 +69,11 @@ impl TimeManager {
         self.start.elapsed().as_millis() as u64
     }
 
+    /// Get base budget in milliseconds.
+    pub fn budget_ms(&self) -> u64 {
+        self.budget_ms
+    }
+
     /// Soft stop: exceeded base budget. Used between ID iterations.
     pub fn should_stop(&self) -> bool {
         self.stop_flag.load(Ordering::Relaxed) || self.elapsed_ms() >= self.budget_ms

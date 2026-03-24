@@ -362,6 +362,32 @@ Frozen spec: IID_DEPTH_THRESHOLD = 4, IID_REDUCTION = 2
 
 ---
 
+## DD-COUNTERMOVE — Countermove Heuristic
+Decision:   YES — DONE in v0.0.6
+Date:       2026-03-24
+Est. ELO:   +15-25
+Source:     chessprogramming.org/Countermove_Heuristic
+Frozen spec: COUNTERMOVE_SCORE = 8000, countermoves[from][to] table
+
+---
+
+## DD-CAPTURE-HISTORY — Capture History Table
+Decision:   YES — DONE in v0.0.6
+Date:       2026-03-24
+Est. ELO:   +10-15
+Source:     chessprogramming.org/History_Heuristic (capture variant)
+Frozen spec: capture_hist[color][to_sq][captured_role], bonus = depth^2
+
+---
+
+## DD-COMPLEXITY-TIME — Complexity-Based Time Management
+Decision:   YES — DONE in v0.0.6
+Date:       2026-03-24
+Est. ELO:   +10-20
+Frozen spec: STABILITY_THRESHOLD = 3, STABILITY_BONUS = 0.5, INSTABILITY_PENALTY = 1.5
+
+---
+
 ================================================================================
 VERSION 1.0 SUMMARY
 ================================================================================
@@ -371,6 +397,7 @@ Features v0.0.2: +DD-LMR+DD07+DD03B
 Features v0.0.3: +DD05+DD-HISTORY+DD-SEE
 Features v0.0.4: +DD-PASSED-PAWNS+DD-PAWN-STRUCTURE+DD-ROOK-FILES+DD-BISHOP-PAIR+DD-KING-SAFETY
 Features v0.0.5: +DD-FUTILITY+DD-RAZOR+DD-LMR-LOG+DD-IID
+Features v0.0.6: +DD-COUNTERMOVE+DD-CAPTURE-HISTORY+DD-COMPLEXITY-TIME
 Deferred: none
 
 ELO estimate:
@@ -409,6 +436,7 @@ ITERATION ROADMAP
 0.0.3 — Null move pruning + History heuristic + SEE (DD05 + DD-HISTORY + DD-SEE) — DONE
 0.0.4 — Eval improvements: passed pawns, pawn structure, rook files, bishop pair, king safety — DONE
 0.0.5 — Search efficiency: futility pruning, razoring, log LMR, IID — DONE
+0.0.6 — Move ordering + time: countermove, capture history, complexity time — DONE
 1.x — Climb weekly. Every change CHP-verified. Every ELO delta logged.
 
 ================================================================================
@@ -433,3 +461,5 @@ CHANGE LOG
 2026-03-24 — v0.0.5 features added: Futility pruning, Razoring, Logarithmic LMR, IID.
              50/50 benchmark pass (100%). Zero compiler warnings. All sigma gates pass.
              DD-FUTILITY, DD-RAZOR, DD-LMR-LOG, DD-IID locked. Dead code cleaned up.
+2026-03-24 — v0.0.6 features added: Countermove heuristic, Capture history, Complexity time.
+             50/50 benchmark pass (100%). Zero warnings. All sigma gates pass.

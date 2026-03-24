@@ -33,6 +33,11 @@ const RAZOR_MARGIN: [i32; 3] = [0, 300, 500];
 const IID_DEPTH_THRESHOLD: i32 = 4;
 const IID_REDUCTION: i32 = 2;
 
+// Complexity-based Time Management — v0.0.6
+const STABILITY_THRESHOLD: u8 = 3;
+const STABILITY_BONUS: f64 = 0.5;
+const INSTABILITY_PENALTY: f64 = 1.5;
+
 const INF: i32 = i32::MAX - 1;
 const NEG_INF: i32 = i32::MIN + 1;
 
@@ -94,6 +99,8 @@ pub fn iterative_deepening(
 
     let mut best_move: Option<Move> = None;
     let mut best_score: i32 = 0;
+    let mut prev_best_packed: Option<u16> = None;
+    let mut stability_count: u8 = 0;
 
     let depth_limit = max_depth.min(MAX_DEPTH);
 
@@ -168,10 +175,36 @@ pub fn iterative_deepening(
         }
 
         if let Some(ref m) = mv {
+            let cur_packed = pack_move(m);
+
+            // Track best move stability for time management
+            if prev_best_packed == Some(cur_packed) {
+                stability_count = stability_count.saturating_add(1);
+            } else {
+                stability_count = 0;
+            }
+            prev_best_packed = Some(cur_packed);
+
             best_move = Some(m.clone());
             best_score = score;
             let elapsed = tm.elapsed_ms().max(1);
             info_callback(depth, score, stats.node_count, elapsed, m);
+        }
+
+        // Complexity-based soft stop — v0.0.6
+        let budget = tm.budget_ms();
+        if budget < u64::MAX {
+            let elapsed = tm.elapsed_ms();
+            let adjusted_budget = if stability_count >= STABILITY_THRESHOLD {
+                (budget as f64 * STABILITY_BONUS) as u64
+            } else if stability_count == 0 && depth > 2 {
+                (budget as f64 * INSTABILITY_PENALTY) as u64
+            } else {
+                budget
+            };
+            if elapsed >= adjusted_budget {
+                break;
+            }
         }
 
         if tm.should_stop() {
@@ -208,7 +241,8 @@ fn root_search_windowed(
     let zobrist = zobrist_key(pos);
     let tt_move = tt.probe(zobrist).map(|e| e.mv);
 
-    let ordered = picker.order_moves(&moves, 0, tt_move);
+    let stm_color = if pos.turn() == Color::White { 0 } else { 1 };
+    let ordered = picker.order_moves(&moves, 0, tt_move, None, stm_color);
 
     let mut alpha = init_alpha;
     let beta = init_beta;
@@ -223,16 +257,17 @@ fn root_search_windowed(
         let child_hash = zobrist_key(&new_pos);
         history.push(child_hash);
 
+        let cur_packed = Some(pack_move(m));
         let score;
         if i == 0 {
             score = -negamax(&new_pos, -beta, -alpha, depth - 1, 1, 0,
-                             tt, picker, tb, tm, history, stats);
+                             cur_packed, tt, picker, tb, tm, history, stats);
         } else {
             let null_score = -negamax(&new_pos, -(alpha + 1), -alpha, depth - 1, 1, 0,
-                                      tt, picker, tb, tm, history, stats);
+                                      cur_packed, tt, picker, tb, tm, history, stats);
             if null_score > alpha && null_score < beta {
                 score = -negamax(&new_pos, -beta, -alpha, depth - 1, 1, 0,
-                                 tt, picker, tb, tm, history, stats);
+                                 cur_packed, tt, picker, tb, tm, history, stats);
             } else {
                 score = null_score;
             }
@@ -314,6 +349,7 @@ fn negamax(
     mut depth: i32,
     ply: u32,
     mut extensions: u8,
+    prev_move: Option<u16>,
     tt: &mut TranspositionTable,
     picker: &mut MovePicker,
     tb: Option<&TablebaseProber>,
@@ -411,7 +447,7 @@ fn negamax(
     if depth >= 3 && !in_check && has_non_pawn_pieces(pos) && beta.abs() < MATE_THRESHOLD {
         if let Some(null_pos) = make_null_move_pos(pos) {
             let null_score = -negamax(&null_pos, -beta, -beta + 1, depth - 1 - NULL_MOVE_R,
-                                       ply + 1, extensions, tt, picker, tb, tm, history, stats);
+                                       ply + 1, extensions, None, tt, picker, tb, tm, history, stats);
             if null_score >= beta {
                 return beta;
             }
@@ -432,7 +468,7 @@ fn negamax(
     let tt_move = if tt_move.is_none() && depth >= IID_DEPTH_THRESHOLD && !in_check {
         // No TT move at a deep node: do a shallow search to find a good first move
         let iid_depth = depth - IID_REDUCTION;
-        negamax(pos, alpha, beta, iid_depth, ply, extensions, tt, picker, tb, tm, history, stats);
+        negamax(pos, alpha, beta, iid_depth, ply, extensions, prev_move, tt, picker, tb, tm, history, stats);
         // Now probe TT for the move the shallow search stored
         tt.probe(zobrist).and_then(|e| if e.mv != 0 { Some(e.mv) } else { None })
     } else {
@@ -440,7 +476,8 @@ fn negamax(
     };
 
     // Move ordering
-    let ordered = picker.order_moves(&moves, ply as u8, tt_move);
+    let stm_color = if pos.turn() == Color::White { 0 } else { 1 };
+    let ordered = picker.order_moves(&moves, ply as u8, tt_move, prev_move, stm_color);
 
     let original_alpha = alpha;
     let mut best_score = NEG_INF;
@@ -466,11 +503,12 @@ fn negamax(
             }
         }
 
+        let cur_packed = Some(pack_move(m));
         let score;
         if i == 0 {
             // First move: full window, full depth
             score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
-                             extensions, tt, picker, tb, tm, history, stats);
+                             extensions, cur_packed, tt, picker, tb, tm, history, stats);
         } else {
             // LMR: logarithmic reduction for quiet late moves — v0.0.5
             let lmr_depth = if i >= LMR_THRESHOLD && depth >= 3 && !in_check && is_quiet {
@@ -483,18 +521,18 @@ fn negamax(
 
             // PVS null-window search (possibly reduced by LMR)
             let mut null_score = -negamax(&new_pos, -(alpha + 1), -alpha, lmr_depth,
-                                          ply + 1, extensions, tt, picker, tb, tm, history, stats);
+                                          ply + 1, extensions, cur_packed, tt, picker, tb, tm, history, stats);
 
             // If LMR reduced and score beats alpha, re-search at full depth with null window
             if lmr_depth < depth - 1 && null_score > alpha {
                 null_score = -negamax(&new_pos, -(alpha + 1), -alpha, depth - 1,
-                                      ply + 1, extensions, tt, picker, tb, tm, history, stats);
+                                      ply + 1, extensions, cur_packed, tt, picker, tb, tm, history, stats);
             }
 
             // PVS: if null window fails high, re-search with full window
             if null_score > alpha && null_score < beta {
                 score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
-                                 extensions, tt, picker, tb, tm, history, stats);
+                                 extensions, cur_packed, tt, picker, tb, tm, history, stats);
             } else {
                 score = null_score;
             }
@@ -519,13 +557,16 @@ fn negamax(
         if alpha >= beta {
             if is_quiet {
                 picker.store_killer(m, ply as u8);
-                // History: reward cutoff move, penalize other searched quiets
+                picker.store_countermove(prev_move, m);
                 picker.update_history(m, depth as u8, true);
                 for sq in &searched_quiets {
                     if pack_move(sq) != pack_move(m) {
                         picker.update_history(sq, depth as u8, false);
                     }
                 }
+            }
+            if m.is_capture() {
+                picker.update_capture_history(stm_color, m, depth as u8, true);
             }
             break;
         }
@@ -842,7 +883,7 @@ mod tests {
         if let Some(m) = quiet.first() {
             picker.store_killer(m, 3);
             // Verify killer is used in ordering
-            let ordered = picker.order_moves(&moves, 3, None);
+            let ordered = picker.order_moves(&moves, 3, None, None, 0);
             let killer_packed = pack_move(m);
             let killer_idx = ordered.iter().position(|om| pack_move(om) == killer_packed);
             assert!(killer_idx.is_some(), "Killer move should be in ordered list");
@@ -978,11 +1019,19 @@ mod tests {
 
     #[test]
     fn all_pruning_still_finds_mate() {
-        // Futility + razoring + LMR + null move should not prevent mate-in-1
         let pos = pos_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 3");
         let mut stats = SearchStats::new();
         let (score, mv) = alpha_beta_search(&pos, 5, None, &mut stats);
         assert!(score >= CHECKMATE - 100, "Should find mate with all pruning, got {}", score);
         assert!(mv.is_some());
+    }
+
+    // === v0.0.6 Feature Tests ===
+
+    #[test]
+    fn stability_constants_correct() {
+        assert_eq!(STABILITY_THRESHOLD, 3);
+        assert!((STABILITY_BONUS - 0.5).abs() < f64::EPSILON);
+        assert!((INSTABILITY_PENALTY - 1.5).abs() < f64::EPSILON);
     }
 }

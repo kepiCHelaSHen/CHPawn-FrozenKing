@@ -17,6 +17,9 @@ const LOSING_CAPTURE_BASE: i32 = -1000; // Losing captures score below quiet mov
 const HISTORY_MAX: i32 = 16384;
 const HISTORY_MIN: i32 = -16384;
 
+// Countermove Heuristic — v0.0.6
+const COUNTERMOVE_SCORE: i32 = 8000;
+
 fn role_value(role: Role) -> i32 {
     match role {
         Role::Pawn => PAWN,
@@ -62,12 +65,16 @@ fn capture_score(m: &Move) -> i32 {
     }
 }
 
-/// Move picker with killer move and history heuristic support.
+/// Move picker with killer, history, countermove, and capture history support.
 pub struct MovePicker {
     /// 2 killer slots per depth, up to 64 depths
     killer_moves: [[Option<u16>; 2]; 64],
     /// History heuristic: history[from][to] tracks quiet move cutoff frequency
     history: [[i32; 64]; 64],
+    /// Countermove table: countermoves[from][to] of previous move → refutation move
+    countermoves: [[Option<u16>; 64]; 64],
+    /// Capture history: capture_hist[color][to_sq][captured_role] (role 0-5: P,N,B,R,Q,K)
+    capture_hist: [[[i32; 6]; 64]; 2],
 }
 
 impl MovePicker {
@@ -75,12 +82,20 @@ impl MovePicker {
         MovePicker {
             killer_moves: [[None; 2]; 64],
             history: [[0; 64]; 64],
+            countermoves: [[None; 64]; 64],
+            capture_hist: [[[0; 6]; 64]; 2],
         }
     }
 
-    /// Order moves: captures (MVV-LVA) > killers > quiet moves.
-    /// TT move (if provided) is searched first.
-    pub fn order_moves(&self, moves: &MoveList, depth: u8, tt_move: Option<u16>) -> Vec<Move> {
+    /// Order moves: TT > captures (MVV-LVA+capture history) > killers > countermove > quiet (history).
+    pub fn order_moves(&self, moves: &MoveList, depth: u8, tt_move: Option<u16>,
+                       prev_move: Option<u16>, stm_color: usize) -> Vec<Move> {
+        let countermove = prev_move.and_then(|pm| {
+            let from = (pm & 0x3F) as usize;
+            let to = ((pm >> 6) & 0x3F) as usize;
+            self.countermoves[from][to]
+        });
+
         let mut scored: Vec<(Move, i32)> = moves
             .iter()
             .map(|m| {
@@ -88,11 +103,20 @@ impl MovePicker {
                 let score = if tt_move == Some(packed) {
                     i32::MAX // TT move first
                 } else if m.is_capture() || m.is_promotion() {
-                    capture_score(m)
+                    let base = capture_score(m);
+                    // Add capture history bonus for captures
+                    if m.is_capture() {
+                        let (_, to) = move_squares(m);
+                        let cap_role = m.capture().map(|r| role_index(r)).unwrap_or(0);
+                        base + self.capture_hist[stm_color][to][cap_role] / 32
+                    } else {
+                        base
+                    }
                 } else if self.is_killer(packed, depth) {
                     KILLER_SCORE
+                } else if countermove == Some(packed) {
+                    COUNTERMOVE_SCORE
                 } else {
-                    // Quiet move: use history heuristic score
                     self.history_score(m)
                 };
                 (m.clone(), score)
@@ -156,9 +180,47 @@ impl MovePicker {
         }
     }
 
+    /// Store a countermove: move that refuted the given previous move.
+    pub fn store_countermove(&mut self, prev_move: Option<u16>, mv: &Move) {
+        if let Some(pm) = prev_move {
+            let from = (pm & 0x3F) as usize;
+            let to = ((pm >> 6) & 0x3F) as usize;
+            self.countermoves[from][to] = Some(pack_move(mv));
+        }
+    }
+
+    /// Update capture history table.
+    pub fn update_capture_history(&mut self, color: usize, mv: &Move, depth: u8, good: bool) {
+        if !mv.is_capture() { return; }
+        let (_, to) = move_squares(mv);
+        let cap_role = mv.capture().map(|r| role_index(r)).unwrap_or(0);
+        let bonus = (depth as i32) * (depth as i32);
+        if good {
+            self.capture_hist[color][to][cap_role] =
+                (self.capture_hist[color][to][cap_role] + bonus).min(HISTORY_MAX);
+        } else {
+            self.capture_hist[color][to][cap_role] =
+                (self.capture_hist[color][to][cap_role] - bonus).max(HISTORY_MIN);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.killer_moves = [[None; 2]; 64];
         self.history = [[0; 64]; 64];
+        self.countermoves = [[None; 64]; 64];
+        self.capture_hist = [[[0; 6]; 64]; 2];
+    }
+}
+
+/// Map Role to index 0-5 for capture history table.
+fn role_index(role: Role) -> usize {
+    match role {
+        Role::Pawn => 0,
+        Role::Knight => 1,
+        Role::Bishop => 2,
+        Role::Rook => 3,
+        Role::Queen => 4,
+        Role::King => 5,
     }
 }
 
@@ -225,7 +287,7 @@ mod tests {
         let pos = pos_from_fen("r1bqkbnr/pppppppp/2n5/4P3/8/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2");
         let moves = pos.legal_moves();
         let picker = MovePicker::new();
-        let ordered = picker.order_moves(&moves, 1, None);
+        let ordered = picker.order_moves(&moves, 1, None, None, 0);
 
         // Find first quiet move index
         let first_quiet = ordered.iter().position(|m| !m.is_capture() && !m.is_promotion());
@@ -258,7 +320,7 @@ mod tests {
         let quiet_moves: Vec<Move> = moves.iter().filter(|m| !m.is_capture()).cloned().collect();
         if let Some(first_quiet) = quiet_moves.first() {
             picker.store_killer(first_quiet, 3);
-            let ordered = picker.order_moves(&moves, 3, None);
+            let ordered = picker.order_moves(&moves, 3, None, None, 0);
 
             // Find the killer in the ordered list
             let killer_packed = pack_move(first_quiet);
@@ -333,7 +395,7 @@ mod tests {
         if quiet.len() >= 2 {
             // Boost second quiet move's history
             picker.update_history(&quiet[1], 10, true); // +100
-            let ordered = picker.order_moves(&moves, 0, None);
+            let ordered = picker.order_moves(&moves, 0, None, None, 0);
             let idx0 = ordered.iter().position(|m| pack_move(m) == pack_move(&quiet[0]));
             let idx1 = ordered.iter().position(|m| pack_move(m) == pack_move(&quiet[1]));
             if let (Some(i0), Some(i1)) = (idx0, idx1) {
@@ -369,6 +431,48 @@ mod tests {
         picker.history[10][20] = 500;
         picker.clear();
         assert_eq!(picker.history[10][20], 0);
+    }
+
+    #[test]
+    fn countermove_score_correct() {
+        assert_eq!(COUNTERMOVE_SCORE, 8000);
+        assert!(COUNTERMOVE_SCORE < KILLER_SCORE, "Countermove should be below killers");
+        assert!(COUNTERMOVE_SCORE > 0, "Countermove should be above base quiet");
+    }
+
+    #[test]
+    fn countermove_store_and_retrieve() {
+        let mut picker = MovePicker::new();
+        let pos = Chess::default();
+        let moves = pos.legal_moves();
+        let quiet: Vec<Move> = moves.iter().filter(|m| !m.is_capture()).cloned().collect();
+        if quiet.len() >= 2 {
+            let prev = pack_move(&quiet[0]);
+            picker.store_countermove(Some(prev), &quiet[1]);
+            let from = (prev & 0x3F) as usize;
+            let to = ((prev >> 6) & 0x3F) as usize;
+            assert_eq!(picker.countermoves[from][to], Some(pack_move(&quiet[1])));
+        }
+    }
+
+    #[test]
+    fn capture_history_updates() {
+        let mut picker = MovePicker::new();
+        // Simulate a capture history update
+        picker.capture_hist[0][20][4] = 0; // white, square 20, queen captured
+        let bonus = 5i32 * 5; // depth=5
+        picker.capture_hist[0][20][4] = (picker.capture_hist[0][20][4] + bonus).min(HISTORY_MAX);
+        assert_eq!(picker.capture_hist[0][20][4], 25);
+    }
+
+    #[test]
+    fn clear_resets_countermove_and_capture_history() {
+        let mut picker = MovePicker::new();
+        picker.countermoves[5][10] = Some(0x1234);
+        picker.capture_hist[0][20][3] = 500;
+        picker.clear();
+        assert_eq!(picker.countermoves[5][10], None);
+        assert_eq!(picker.capture_hist[0][20][3], 0);
     }
 
     #[test]

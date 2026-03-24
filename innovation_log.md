@@ -325,3 +325,40 @@ Context: CHPawn v0.0.4 has strong eval but still loses on depth. Tier 2 search i
 ### FALSE POSITIVES CAUGHT: None
 
 ### REPORT_v005.md WRITTEN — v0.0.5 BUILD COMPLETE
+
+---
+
+## 2026-03-24 — v0.0.6 COMPLETE: Tier 3 — Move Ordering + Time Management
+
+### Feature 1 — Countermove Heuristic (DD-COUNTERMOVE)
+- countermoves[from][to] table: tracks refutation move for each opponent move
+- COUNTERMOVE_SCORE = 8000 (below killers=9000, above quiet history)
+- Stored on quiet beta cutoff, used in move ordering
+- Tests: 2 new (score constant, store/retrieve)
+
+### Feature 2 — Capture History Table (DD-CAPTURE-HISTORY)
+- capture_hist[color][to_sq][captured_role] table
+- Updated on capture beta cutoffs, bonus = depth^2, clamped ±16384
+- Added to capture ordering (bonus/32 on top of MVV-LVA+SEE)
+- Tests: 2 new (update, clear)
+
+### Feature 3 — Complexity-Based Time Management (DD-COMPLEXITY-TIME)
+- STABILITY_THRESHOLD=3, STABILITY_BONUS=0.5, INSTABILITY_PENALTY=1.5
+- Track best move stability across iterations
+- Stable 3+ iterations: use 50% of budget (save time on clear positions)
+- Move changed: use 150% of budget (think harder on complex positions)
+- Hard limit still respected (base * 3)
+- Tests: 1 new (constants)
+- Added TimeManager::budget_ms() accessor
+
+### Sigma Gates (50-position benchmark)
+- 50/50 (100%) → ALL PASS
+- Max position time: 3.9s
+
+### Test Suite
+- 94/94 tests pass (was 89 in v0.0.5, +5 new)
+- Zero compiler warnings
+
+### FALSE POSITIVES CAUGHT: None
+
+### REPORT_v006.md WRITTEN — v0.0.6 BUILD COMPLETE
