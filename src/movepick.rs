@@ -5,7 +5,7 @@
 ///   Killers: 9000
 ///   Quiet: 0
 
-use shakmaty::{Move, MoveList, Role, Square};
+use shakmaty::{Move, MoveList, Role};
 use crate::eval::{PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING};
 
 const CAPTURE_BASE: i32 = 10000;

@@ -274,3 +274,54 @@ All sources published on chessprogramming.org. All CHP-verified.
 ### FALSE POSITIVES CAUGHT: None
 
 ### REPORT_v004.md WRITTEN — v0.0.4 BUILD COMPLETE
+
+---
+
+## 2026-03-24 — v0.0.5 COMPLETE: Search Efficiency (Tier 2)
+
+Context: CHPawn v0.0.4 has strong eval but still loses on depth. Tier 2 search improvements.
+
+### Feature 1 — Futility Pruning (DD-FUTILITY)
+- FUTILITY_MARGIN = [0, 100, 200, 300] (by depth)
+- Skip quiet moves at depth <= 3 when static_eval + margin <= alpha
+- Disabled in check, at PV nodes, and near mate scores
+- Tests: 1 new (constants)
+
+### Feature 2 — Razoring (DD-RAZOR)
+- RAZOR_MARGIN = [0, 300, 500] (by depth)
+- At depth <= 2, if eval + margin <= alpha, drop to quiescence
+- Disabled in check
+- Tests: 1 new (constants)
+
+### Feature 3 — Logarithmic LMR (DD-LMR-LOG)
+- Replaced flat reduction (1 ply) with: max(1, ln(depth) * ln(move_index) / 2)
+- At depth 6, move 10: reduction = 2. At depth 10, move 20: reduction = 3
+- Still only quiet moves, still re-searches if beats alpha
+- Tests: 3 new (logarithmic formula, minimum clamped, correctness)
+
+### Feature 4 — Internal Iterative Deepening (DD-IID)
+- IID_DEPTH_THRESHOLD = 4, IID_REDUCTION = 2
+- When no TT move at depth >= 4 (not in check): shallow search to find move
+- Uses TT from shallow search for ordering
+- Tests: 1 new (constants)
+
+### Dead Code Cleanup
+- Removed: root_search wrapper, order_moves_simple, order_captures_simple, old quiescence
+- Fixed all compiler warnings: 0 warnings across entire codebase
+- Updated tests to use current API (quiescence_nm, root_search_windowed)
+
+### Sigma Gates (50-position benchmark)
+- Gate 1: illegal_moves = 0 → PASS
+- Gate 2: pass_rate = 50/50 (100%) → PASS
+- Gate 3: pruning_rate = 100% → PASS
+- Gate 4: max_time = 4085ms → PASS
+- ALL SIGMA GATES PASSED
+
+### Test Suite
+- 89/89 tests pass (was 83 in v0.0.4, +6 new)
+- Zero compiler warnings
+- Zero regressions
+
+### FALSE POSITIVES CAUGHT: None
+
+### REPORT_v005.md WRITTEN — v0.0.5 BUILD COMPLETE

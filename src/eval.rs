@@ -1,4 +1,4 @@
-use shakmaty::{Bitboard, Board, Chess, Color, File, Position, Rank, Role, Square};
+use shakmaty::{Board, Chess, Color, File, Position, Rank, Role, Square};
 use crate::pst;
 
 // Frozen piece values per spec.md — DO NOT CHANGE

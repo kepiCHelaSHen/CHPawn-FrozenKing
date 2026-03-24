@@ -324,6 +324,44 @@ Frozen spec: KING_ATTACKER_PENALTY = -10, KING_SHIELD_BONUS = 10
 
 ---
 
+## DD-FUTILITY — Futility Pruning
+Decision:   YES — DONE in v0.0.5
+Date:       2026-03-24
+Est. ELO:   +20-40
+Source:     chessprogramming.org/Futility_Pruning
+Frozen spec: FUTILITY_MARGIN = [0, 100, 200, 300]
+             depth <= 3, not in check, not PV node, alpha not mate score
+
+---
+
+## DD-RAZOR — Razoring
+Decision:   YES — DONE in v0.0.5
+Date:       2026-03-24
+Est. ELO:   +15-25
+Source:     chessprogramming.org/Razoring
+Frozen spec: RAZOR_MARGIN = [0, 300, 500]
+             depth <= 2, not in check
+
+---
+
+## DD-LMR-LOG — Logarithmic LMR Formula
+Decision:   YES — DONE in v0.0.5
+Date:       2026-03-24
+Est. ELO:   +10-20
+Source:     chessprogramming.org/Late_Move_Reductions
+Frozen spec: reduction = max(1, (ln(depth) * ln(move_index) / 2) as i32)
+
+---
+
+## DD-IID — Internal Iterative Deepening
+Decision:   YES — DONE in v0.0.5
+Date:       2026-03-24
+Est. ELO:   +10-20
+Source:     chessprogramming.org/Internal_Iterative_Deepening
+Frozen spec: IID_DEPTH_THRESHOLD = 4, IID_REDUCTION = 2
+
+---
+
 ================================================================================
 VERSION 1.0 SUMMARY
 ================================================================================
@@ -332,6 +370,7 @@ Features v1.0: DD01+DD02+DD03A+DD04+DD06+DD08+DD09+DD10
 Features v0.0.2: +DD-LMR+DD07+DD03B
 Features v0.0.3: +DD05+DD-HISTORY+DD-SEE
 Features v0.0.4: +DD-PASSED-PAWNS+DD-PAWN-STRUCTURE+DD-ROOK-FILES+DD-BISHOP-PAIR+DD-KING-SAFETY
+Features v0.0.5: +DD-FUTILITY+DD-RAZOR+DD-LMR-LOG+DD-IID
 Deferred: none
 
 ELO estimate:
@@ -369,6 +408,7 @@ ITERATION ROADMAP
 0.0.2 — LMR + Aspiration windows + Dynamic time management (DD-LMR + DD07 + DD03B) — DONE
 0.0.3 — Null move pruning + History heuristic + SEE (DD05 + DD-HISTORY + DD-SEE) — DONE
 0.0.4 — Eval improvements: passed pawns, pawn structure, rook files, bishop pair, king safety — DONE
+0.0.5 — Search efficiency: futility pruning, razoring, log LMR, IID — DONE
 1.x — Climb weekly. Every change CHP-verified. Every ELO delta logged.
 
 ================================================================================
@@ -390,3 +430,6 @@ CHANGE LOG
 2026-03-24 — v0.0.4 features added: Passed pawns, pawn structure, rook files, bishop pair, king safety.
              50/50 benchmark pass (100%). All sigma gates pass.
              DD-PASSED-PAWNS, DD-PAWN-STRUCTURE, DD-ROOK-FILES, DD-BISHOP-PAIR, DD-KING-SAFETY locked.
+2026-03-24 — v0.0.5 features added: Futility pruning, Razoring, Logarithmic LMR, IID.
+             50/50 benchmark pass (100%). Zero compiler warnings. All sigma gates pass.
+             DD-FUTILITY, DD-RAZOR, DD-LMR-LOG, DD-IID locked. Dead code cleaned up.

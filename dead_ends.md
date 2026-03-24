@@ -48,3 +48,10 @@
                   This breaks sigma gate endgame positions.
 **Detection**: has_non_pawn_pieces() returns false → skip null move
 **Do NOT apply**: null move when STM has no pieces beyond king + pawns
+
+## DEAD END 8 — Futility pruning in check or mate positions (v0.0.5)
+**What**: Applying futility pruning when in check or when alpha/beta are mate scores
+**Why dead end**: In check positions, static eval is meaningless (must escape check).
+                  Mate scores need full search to find the mate sequence.
+**Detection**: futility has `!in_check && alpha.abs() < MATE_THRESHOLD` guard
+**Do NOT apply**: futility when in check or when alpha is a mate score

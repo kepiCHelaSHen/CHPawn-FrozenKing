@@ -2,8 +2,7 @@ use shakmaty::{Chess, CastlingMode, Color, Move, Position};
 use shakmaty::fen::Fen;
 use shakmaty::uci::Uci;
 use shakmaty_syzygy::Wdl;
-use chpawn_frozen_king::eval::evaluate;
-use chpawn_frozen_king::search::{alpha_beta_search, minimax, SearchStats, MAX_DEPTH};
+use chpawn_frozen_king::search::{alpha_beta_search, minimax, SearchStats};
 use chpawn_frozen_king::tablebase::TablebaseProber;
 use std::time::Instant;
 
@@ -88,7 +87,7 @@ fn pos_from_fen(fen: &str) -> Chess {
     f.into_position(CastlingMode::Standard).unwrap()
 }
 
-fn move_to_uci(pos: &Chess, m: &Move) -> String {
+fn move_to_uci(_pos: &Chess, m: &Move) -> String {
     Uci::from_standard(m).to_string()
 }
 
@@ -103,6 +102,7 @@ struct BenchResult {
     passed: bool,
     wdl_preserved: bool,
     time_ms: u64,
+    #[allow(dead_code)]
     nodes: u64,
 }
 
@@ -252,7 +252,7 @@ fn main() {
     };
 
     let pass_count = results.iter().filter(|r| r.passed).count();
-    let fail_count = results.len() - pass_count;
+    let _fail_count = results.len() - pass_count;
     let illegal_moves = 0u32; // shakmaty guarantees legal moves
     let max_ms = results.iter().map(|r| r.time_ms).max().unwrap_or(0);
     let pass_rate = pass_count as f64 / results.len() as f64;

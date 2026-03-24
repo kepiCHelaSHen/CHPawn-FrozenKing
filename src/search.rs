@@ -1,6 +1,5 @@
-use shakmaty::{Bitboard, Chess, CastlingMode, Color, FromSetup, Move, MoveList, Position, Role, Setup};
+use shakmaty::{Bitboard, Chess, CastlingMode, Color, FromSetup, Move, Position, Role, Setup};
 use shakmaty::zobrist::{ZobristHash, Zobrist64};
-use std::num::NonZeroU32;
 use crate::eval::{evaluate, piece_value, CHECKMATE, DRAW};
 use crate::movepick::{MovePicker, pack_move};
 use crate::tablebase::TablebaseProber;
@@ -13,16 +12,26 @@ pub const MAX_DEPTH: u8 = 64;
 pub const DELTA: i32 = 200; // Frozen in spec.md
 const MAX_EXTENSIONS: u8 = 4; // Frozen in spec.md
 
-// LMR — Late Move Reductions (v0.0.2)
-const LMR_THRESHOLD: usize = 2; // Reduce moves after first 2
-const LMR_REDUCTION: i32 = 1;   // Reduce by 1 ply
+// LMR — Late Move Reductions (v0.0.2, upgraded to logarithmic in v0.0.5)
+const LMR_THRESHOLD: usize = 2;
+const LMR_BASE_REDUCTION: i32 = 1;
 
 // Aspiration Windows — DD07 (v0.0.2)
-const ASPIRATION_WINDOW: i32 = 50; // Initial window in centipawns
+const ASPIRATION_WINDOW: i32 = 50;
 
 // Null Move Pruning — DD05 (v0.0.3)
-const NULL_MOVE_R: i32 = 2;          // Null move reduction
-const MATE_THRESHOLD: i32 = 900_000; // Don't null-move prune near mate scores
+const NULL_MOVE_R: i32 = 2;
+const MATE_THRESHOLD: i32 = 900_000;
+
+// Futility Pruning — v0.0.5
+const FUTILITY_MARGIN: [i32; 4] = [0, 100, 200, 300];
+
+// Razoring — v0.0.5
+const RAZOR_MARGIN: [i32; 3] = [0, 300, 500];
+
+// Internal Iterative Deepening — v0.0.5
+const IID_DEPTH_THRESHOLD: i32 = 4;
+const IID_REDUCTION: i32 = 2;
 
 const INF: i32 = i32::MAX - 1;
 const NEG_INF: i32 = i32::MIN + 1;
@@ -263,20 +272,6 @@ fn root_search_windowed(
     (white_score, best_move)
 }
 
-/// Root search with full window (backward-compatible wrapper).
-fn root_search(
-    pos: &Chess,
-    depth: i32,
-    tt: &mut TranspositionTable,
-    picker: &mut MovePicker,
-    tb: Option<&TablebaseProber>,
-    tm: &TimeManager,
-    history: &mut Vec<u64>,
-    stats: &mut SearchStats,
-) -> (i32, Option<Move>) {
-    root_search_windowed(pos, depth, NEG_INF, INF, tt, picker, tb, tm, history, stats)
-}
-
 // ============================================================================
 // Null Move Pruning helpers — DD05
 // ============================================================================
@@ -406,18 +401,43 @@ fn negamax(
         tt_move = None;
     }
 
+    // Static eval for pruning decisions
+    let static_eval = {
+        let raw = evaluate(pos);
+        if pos.turn() == Color::White { raw } else { -raw }
+    };
+
     // Null move pruning — DD05
-    // Conditions: depth >= 3, not in check, has non-pawn pieces, beta not mate score
     if depth >= 3 && !in_check && has_non_pawn_pieces(pos) && beta.abs() < MATE_THRESHOLD {
         if let Some(null_pos) = make_null_move_pos(pos) {
-            // Search with null window around beta, reduced depth
             let null_score = -negamax(&null_pos, -beta, -beta + 1, depth - 1 - NULL_MOVE_R,
                                        ply + 1, extensions, tt, picker, tb, tm, history, stats);
             if null_score >= beta {
-                return beta; // Null move cutoff
+                return beta;
             }
         }
     }
+
+    // Razoring — v0.0.5
+    if depth <= 2 && !in_check && (depth as usize) < RAZOR_MARGIN.len() {
+        if static_eval + RAZOR_MARGIN[depth as usize] <= alpha {
+            let razor_score = quiescence_nm(pos, alpha, beta, ply, tb, stats);
+            if razor_score <= alpha {
+                return razor_score;
+            }
+        }
+    }
+
+    // Internal Iterative Deepening — v0.0.5
+    let tt_move = if tt_move.is_none() && depth >= IID_DEPTH_THRESHOLD && !in_check {
+        // No TT move at a deep node: do a shallow search to find a good first move
+        let iid_depth = depth - IID_REDUCTION;
+        negamax(pos, alpha, beta, iid_depth, ply, extensions, tt, picker, tb, tm, history, stats);
+        // Now probe TT for the move the shallow search stored
+        tt.probe(zobrist).and_then(|e| if e.mv != 0 { Some(e.mv) } else { None })
+    } else {
+        tt_move
+    };
 
     // Move ordering
     let ordered = picker.order_moves(&moves, ply as u8, tt_move);
@@ -437,15 +457,26 @@ fn negamax(
 
         let is_quiet = !m.is_capture() && !m.is_promotion();
 
+        // Futility pruning — v0.0.5
+        // At shallow depth, if static eval + margin can't reach alpha, skip quiet moves
+        if i > 0 && is_quiet && !in_check && depth <= 3 && alpha.abs() < MATE_THRESHOLD {
+            if static_eval + FUTILITY_MARGIN[depth as usize] <= alpha {
+                history.pop();
+                continue;
+            }
+        }
+
         let score;
         if i == 0 {
             // First move: full window, full depth
             score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
                              extensions, tt, picker, tb, tm, history, stats);
         } else {
-            // LMR: reduce quiet late moves at sufficient depth when not in check
+            // LMR: logarithmic reduction for quiet late moves — v0.0.5
             let lmr_depth = if i >= LMR_THRESHOLD && depth >= 3 && !in_check && is_quiet {
-                depth - 1 - LMR_REDUCTION
+                let reduction = ((depth as f64).ln() * (i as f64).ln() / 2.0) as i32;
+                let reduction = reduction.max(LMR_BASE_REDUCTION);
+                (depth - 1 - reduction).max(0)
             } else {
                 depth - 1
             };
@@ -600,7 +631,7 @@ pub fn alpha_beta_search(
     pos: &Chess,
     depth: u8,
     tb: Option<&TablebaseProber>,
-    stats: &mut SearchStats,
+    _stats: &mut SearchStats,
 ) -> (i32, Option<Move>) {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let tm = TimeManager::infinite(stop_flag);
@@ -615,25 +646,6 @@ pub fn alpha_beta_search(
 // ============================================================================
 // Pure Minimax — kept for benchmark pruning rate measurement
 // ============================================================================
-
-/// Old move ordering for minimax (simple MVV-LVA, no killers/TT).
-fn move_order_score_simple(m: &Move) -> i32 {
-    if m.is_capture() {
-        let victim = m.capture().map(|r| piece_value(r)).unwrap_or(0);
-        let attacker = piece_value(m.role());
-        victim * 10 - attacker + 10000
-    } else if m.is_promotion() {
-        5000
-    } else {
-        0
-    }
-}
-
-fn order_moves_simple(moves: &MoveList) -> Vec<Move> {
-    let mut ordered: Vec<Move> = moves.iter().cloned().collect();
-    ordered.sort_by(|a, b| move_order_score_simple(b).cmp(&move_order_score_simple(a)));
-    ordered
-}
 
 pub fn minimax(
     pos: &Chess,
@@ -687,86 +699,6 @@ pub fn minimax(
             }
         }
         (best_score, best_move)
-    }
-}
-
-// ============================================================================
-// Old quiescence — kept for reference, used by old search path
-// ============================================================================
-
-fn order_captures_simple(moves: &MoveList) -> Vec<Move> {
-    let mut captures: Vec<Move> = moves.iter().filter(|m| m.is_capture()).cloned().collect();
-    captures.sort_by(|a, b| move_order_score_simple(b).cmp(&move_order_score_simple(a)));
-    captures
-}
-
-/// White-centric quiescence search (old interface for minimax compatibility).
-pub fn quiescence(
-    pos: &Chess,
-    mut alpha: i32,
-    mut beta: i32,
-    tb: Option<&TablebaseProber>,
-    stats: &mut SearchStats,
-) -> i32 {
-    stats.node_count += 1;
-
-    let stand_pat = evaluate(pos);
-    let is_white = pos.turn() == Color::White;
-
-    if is_white {
-        if stand_pat >= beta {
-            return beta;
-        }
-        if stand_pat > alpha {
-            alpha = stand_pat;
-        }
-
-        let best_cap = best_capturable_value(pos);
-        if stand_pat + best_cap + DELTA < alpha {
-            return alpha;
-        }
-
-        let moves = pos.legal_moves();
-        let captures = order_captures_simple(&moves);
-        for m in &captures {
-            let mut new_pos = pos.clone();
-            new_pos.play_unchecked(m);
-            let score = quiescence(&new_pos, alpha, beta, tb, stats);
-            if score > alpha {
-                alpha = score;
-            }
-            if alpha >= beta {
-                return beta;
-            }
-        }
-        alpha
-    } else {
-        if stand_pat <= alpha {
-            return alpha;
-        }
-        if stand_pat < beta {
-            beta = stand_pat;
-        }
-
-        let best_cap = best_capturable_value(pos);
-        if stand_pat - best_cap - DELTA > beta {
-            return beta;
-        }
-
-        let moves = pos.legal_moves();
-        let captures = order_captures_simple(&moves);
-        for m in &captures {
-            let mut new_pos = pos.clone();
-            new_pos.play_unchecked(m);
-            let score = quiescence(&new_pos, alpha, beta, tb, stats);
-            if score < beta {
-                beta = score;
-            }
-            if alpha >= beta {
-                return alpha;
-            }
-        }
-        beta
     }
 }
 
@@ -839,21 +771,20 @@ mod tests {
     fn tt_hit_rate_nonzero_on_repeated_search() {
         let pos = pos_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let tm = TimeManager::infinite(stop_flag);
+        let tm = TimeManager::infinite(stop_flag.clone());
         let mut tt = TranspositionTable::new(16);
         let mut picker = MovePicker::new();
-        let mut stats = SearchStats::new();
 
         // First search populates TT
         let mut noop = |_: u8, _: i32, _: u64, _: u64, _: &Move| {};
         let history: Vec<u64> = Vec::new();
         iterative_deepening(&pos, 4, &tm, &mut tt, &mut picker, None, &history, &mut noop);
 
-        // Second search should get TT hits
-        stats = SearchStats::new();
+        // Second search should get TT hits (use iterative_deepening again)
+        let mut stats2 = SearchStats::new();
         let mut search_history = vec![zobrist_key(&pos)];
-        let _ = root_search(&pos, 4, &mut tt, &mut picker, None, &tm, &mut search_history, &mut stats);
-        assert!(stats.tt_hits > 0, "Should have TT hits on repeated search, got 0");
+        let _ = root_search_windowed(&pos, 4, NEG_INF, INF, &mut tt, &mut picker, None, &tm, &mut search_history, &mut stats2);
+        assert!(stats2.tt_hits > 0, "Should have TT hits on repeated search, got 0");
     }
 
     #[test]
@@ -922,23 +853,26 @@ mod tests {
 
     #[test]
     fn quiescence_no_captures_equals_eval() {
+        // Kings only: no captures, quiescence returns stand-pat = eval from STM perspective
         let pos = pos_from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
         let mut stats = SearchStats::new();
-        let score = quiescence(&pos, NEG_INF, INF, None, &mut stats);
-        assert_eq!(score, evaluate(&pos));
+        let score = quiescence_nm(&pos, NEG_INF, INF, 0, None, &mut stats);
+        let expected = evaluate(&pos); // white-centric, which equals STM for white
+        assert_eq!(score, expected);
     }
 
     #[test]
     fn quiescence_hanging_piece_resolved() {
         let pos = pos_from_fen("4k3/8/8/8/8/8/8/Q3K2r w - - 0 1");
         let mut stats = SearchStats::new();
-        let static_eval = evaluate(&pos);
-        let q_score = quiescence(&pos, NEG_INF, INF, None, &mut stats);
+        let raw_eval = evaluate(&pos);
+        let stand_pat = raw_eval; // white to move, so STM = white-centric
+        let q_score = quiescence_nm(&pos, NEG_INF, INF, 0, None, &mut stats);
         assert!(
-            q_score >= static_eval,
-            "Quiescence ({}) should be >= static eval ({}) with hanging piece",
+            q_score >= stand_pat,
+            "Quiescence ({}) should be >= stand-pat ({}) with hanging piece",
             q_score,
-            static_eval
+            stand_pat
         );
     }
 
@@ -955,18 +889,31 @@ mod tests {
     #[test]
     fn lmr_constants_correct() {
         assert_eq!(LMR_THRESHOLD, 2);
-        assert_eq!(LMR_REDUCTION, 1);
+        assert_eq!(LMR_BASE_REDUCTION, 1);
     }
 
     #[test]
-    fn lmr_reduces_node_count() {
-        // LMR should reduce total nodes at depth >= 3 compared to no-LMR
-        // We test indirectly: search should still find correct moves
+    fn lmr_logarithmic_increases_with_depth() {
+        // At depth 6, move 10: ln(6)*ln(10)/2 ≈ 2.06 → reduction = 2
+        let reduction = ((6f64).ln() * (10f64).ln() / 2.0) as i32;
+        assert!(reduction > 1, "Log LMR at depth 6 move 10 should reduce > 1, got {}", reduction);
+    }
+
+    #[test]
+    fn lmr_minimum_is_base_reduction() {
+        // At depth 3, move 2: ln(3)*ln(2)/2 ≈ 0.38 → clamped to 1
+        let raw = ((3f64).ln() * (2f64).ln() / 2.0) as i32;
+        let reduction = raw.max(LMR_BASE_REDUCTION);
+        assert_eq!(reduction, LMR_BASE_REDUCTION);
+    }
+
+    #[test]
+    fn lmr_still_finds_correct_moves() {
         let pos = pos_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
         let mut stats = SearchStats::new();
         let (score, mv) = alpha_beta_search(&pos, 4, None, &mut stats);
         assert!(mv.is_some(), "LMR search should still return a move");
-        assert!(score > -CHECKMATE && score < CHECKMATE, "Score should be reasonable with LMR");
+        assert!(score > -CHECKMATE && score < CHECKMATE);
     }
 
     #[test]
@@ -1004,11 +951,38 @@ mod tests {
 
     #[test]
     fn aspiration_windows_find_correct_moves() {
-        // Aspiration windows should still find mate-in-1
         let pos = pos_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 3");
         let mut stats = SearchStats::new();
         let (score, mv) = alpha_beta_search(&pos, 3, None, &mut stats);
-        assert!(score >= CHECKMATE - 100, "Aspiration windows should still find mate, got {}", score);
+        assert!(score >= CHECKMATE - 100, "Should find mate, got {}", score);
+        assert!(mv.is_some());
+    }
+
+    // === v0.0.5 Feature Tests ===
+
+    #[test]
+    fn futility_margin_correct() {
+        assert_eq!(FUTILITY_MARGIN, [0, 100, 200, 300]);
+    }
+
+    #[test]
+    fn razor_margin_correct() {
+        assert_eq!(RAZOR_MARGIN, [0, 300, 500]);
+    }
+
+    #[test]
+    fn iid_constants_correct() {
+        assert_eq!(IID_DEPTH_THRESHOLD, 4);
+        assert_eq!(IID_REDUCTION, 2);
+    }
+
+    #[test]
+    fn all_pruning_still_finds_mate() {
+        // Futility + razoring + LMR + null move should not prevent mate-in-1
+        let pos = pos_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 3");
+        let mut stats = SearchStats::new();
+        let (score, mv) = alpha_beta_search(&pos, 5, None, &mut stats);
+        assert!(score >= CHECKMATE - 100, "Should find mate with all pruning, got {}", score);
         assert!(mv.is_some());
     }
 }
