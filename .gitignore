@@ -1,0 +1,5 @@
+target/
+*.pdb
+*.d
+Cargo.lock
+syzygy/
