@@ -149,12 +149,16 @@ Frozen spec:
 ---
 
 ## DD05 — Null Move Pruning
-Decision:   NO — backlog
-Date:       2026-03-23
+Decision:   YES — DONE in v0.0.3
+Date:       2026-03-24
+Est. ELO:   +100-150
 
-Reason: Dangerous in endgame zugzwang. Risks sigma gate on first submission.
-        Hard to debug when combined with all other new features.
-Backlog: Version 1.2 with zugzwang detection disable condition.
+Frozen spec:
+  R = 2 (null move reduction)
+  Conditions: depth >= 3, NOT in check, has non-pawn pieces, beta not mate score
+  Zugzwang protection: has_non_pawn_pieces() — skip if only K+P
+  MATE_THRESHOLD = 900,000
+  On null move cutoff: return beta
 
 ---
 
@@ -247,13 +251,41 @@ Frozen spec:
 
 ---
 
+## DD-HISTORY — History Heuristic
+Decision:   YES — DONE in v0.0.3
+Date:       2026-03-24
+Est. ELO:   +20-40
+
+Frozen spec:
+  history[from][to] table, 64x64 indexed by squares
+  HISTORY_MAX = 16384, HISTORY_MIN = -16384
+  Bonus = depth * depth
+  On beta cutoff: reward cutoff move, penalize other searched quiets
+  Quiet move ordering: score = history[from][to]
+
+---
+
+## DD-SEE — Static Exchange Evaluation
+Decision:   YES — DONE in v0.0.3
+Date:       2026-03-24
+Est. ELO:   +10-20
+
+Frozen spec:
+  Simple SEE: captured_value - attacker_value
+  Winning captures (SEE >= 0): CAPTURE_BASE + MVV-LVA (unchanged)
+  Losing captures (SEE < 0): LOSING_CAPTURE_BASE + SEE (below quiet moves)
+  LOSING_CAPTURE_BASE = -1000
+
+---
+
 ================================================================================
 VERSION 1.0 SUMMARY
 ================================================================================
 
 Features v1.0: DD01+DD02+DD03A+DD04+DD06+DD08+DD09+DD10
 Features v0.0.2: +DD-LMR+DD07+DD03B
-Deferred: DD05(1.2)
+Features v0.0.3: +DD05+DD-HISTORY+DD-SEE
+Deferred: none
 
 ELO estimate:
   Rust verified baseline:       ~1400-1600
@@ -288,7 +320,7 @@ ITERATION ROADMAP
 
 1.0 — Ship. Get on CCRL. Log the ELO.
 0.0.2 — LMR + Aspiration windows + Dynamic time management (DD-LMR + DD07 + DD03B) — DONE
-1.2 — Null move pruning with zugzwang detection (DD05)
+0.0.3 — Null move pruning + History heuristic + SEE (DD05 + DD-HISTORY + DD-SEE) — DONE
 1.x — Climb weekly. Every change CHP-verified. Every ELO delta logged.
 
 ================================================================================
@@ -304,3 +336,6 @@ CHANGE LOG
 2026-03-24 — v0.0.2 features added: LMR, Aspiration Windows, Dynamic Time Management.
              50/50 benchmark pass (100%). All sigma gates pass.
              DD03-B, DD07, DD-LMR all locked.
+2026-03-24 — v0.0.3 features added: Null Move Pruning, History Heuristic, SEE.
+             50/50 benchmark pass (100%). All sigma gates pass.
+             DD05, DD-HISTORY, DD-SEE all locked.

@@ -5,12 +5,17 @@
 ///   Killers: 9000
 ///   Quiet: 0
 
-use shakmaty::{Move, MoveList, Role};
+use shakmaty::{Move, MoveList, Role, Square};
 use crate::eval::{PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING};
 
 const CAPTURE_BASE: i32 = 10000;
 const KILLER_SCORE: i32 = 9000;
 const PROMOTION_SCORE: i32 = 5000;
+const LOSING_CAPTURE_BASE: i32 = -1000; // Losing captures score below quiet moves
+
+// History Heuristic — v0.0.3
+const HISTORY_MAX: i32 = 16384;
+const HISTORY_MIN: i32 = -16384;
 
 fn role_value(role: Role) -> i32 {
     match role {
@@ -23,30 +28,53 @@ fn role_value(role: Role) -> i32 {
     }
 }
 
-/// MVV-LVA score per frozen spec:
-///   victim_value * 10 - attacker_value + CAPTURE_BASE
-fn mvv_lva_score(m: &Move) -> i32 {
-    if m.is_capture() {
+/// Simple SEE (Static Exchange Evaluation) for capture ordering.
+/// Returns estimated material gain: captured_value - attacker_value.
+/// Positive = winning capture, Negative = likely losing capture.
+fn simple_see(m: &Move) -> i32 {
+    if !m.is_capture() {
+        return 0;
+    }
+    let victim = m.capture().map(|r| role_value(r)).unwrap_or(0);
+    let attacker = role_value(m.role());
+    victim - attacker
+}
+
+/// Capture ordering with SEE awareness:
+///   Winning captures (SEE >= 0): CAPTURE_BASE + MVV-LVA
+///   Losing captures (SEE < 0): LOSING_CAPTURE_BASE + SEE (below quiet moves)
+fn capture_score(m: &Move) -> i32 {
+    if !m.is_capture() {
+        if m.is_promotion() {
+            return PROMOTION_SCORE;
+        }
+        return 0;
+    }
+    let see = simple_see(m);
+    if see >= 0 {
+        // Winning/equal capture: use MVV-LVA with high base
         let victim = m.capture().map(|r| role_value(r)).unwrap_or(0);
         let attacker = role_value(m.role());
         victim * 10 - attacker + CAPTURE_BASE
-    } else if m.is_promotion() {
-        PROMOTION_SCORE
     } else {
-        0
+        // Losing capture: score below quiet moves
+        LOSING_CAPTURE_BASE + see
     }
 }
 
-/// Move picker with killer move support.
+/// Move picker with killer move and history heuristic support.
 pub struct MovePicker {
     /// 2 killer slots per depth, up to 64 depths
     killer_moves: [[Option<u16>; 2]; 64],
+    /// History heuristic: history[from][to] tracks quiet move cutoff frequency
+    history: [[i32; 64]; 64],
 }
 
 impl MovePicker {
     pub fn new() -> Self {
         MovePicker {
             killer_moves: [[None; 2]; 64],
+            history: [[0; 64]; 64],
         }
     }
 
@@ -60,11 +88,12 @@ impl MovePicker {
                 let score = if tt_move == Some(packed) {
                     i32::MAX // TT move first
                 } else if m.is_capture() || m.is_promotion() {
-                    mvv_lva_score(m)
+                    capture_score(m)
                 } else if self.is_killer(packed, depth) {
                     KILLER_SCORE
                 } else {
-                    0
+                    // Quiet move: use history heuristic score
+                    self.history_score(m)
                 };
                 (m.clone(), score)
             })
@@ -73,12 +102,12 @@ impl MovePicker {
         scored.into_iter().map(|(m, _)| m).collect()
     }
 
-    /// Order captures only by MVV-LVA for quiescence search.
+    /// Order captures by SEE-aware scoring for quiescence search.
     pub fn order_captures(&self, moves: &MoveList) -> Vec<Move> {
         let mut captures: Vec<(Move, i32)> = moves
             .iter()
             .filter(|m| m.is_capture())
-            .map(|m| (m.clone(), mvv_lva_score(m)))
+            .map(|m| (m.clone(), capture_score(m)))
             .collect();
         captures.sort_by(|a, b| b.1.cmp(&a.1));
         captures.into_iter().map(|(m, _)| m).collect()
@@ -109,9 +138,45 @@ impl MovePicker {
             || self.killer_moves[d][1] == Some(packed)
     }
 
+    /// Get history score for a quiet move.
+    fn history_score(&self, mv: &Move) -> i32 {
+        let (from, to) = move_squares(mv);
+        self.history[from][to]
+    }
+
+    /// Update history table on beta cutoff.
+    /// Reward the move that caused cutoff, penalize other searched quiets.
+    pub fn update_history(&mut self, mv: &Move, depth: u8, good: bool) {
+        let (from, to) = move_squares(mv);
+        let bonus = (depth as i32) * (depth as i32);
+        if good {
+            self.history[from][to] = (self.history[from][to] + bonus).min(HISTORY_MAX);
+        } else {
+            self.history[from][to] = (self.history[from][to] - bonus).max(HISTORY_MIN);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.killer_moves = [[None; 2]; 64];
+        self.history = [[0; 64]; 64];
     }
+}
+
+/// Extract from/to square indices from a move.
+fn move_squares(m: &Move) -> (usize, usize) {
+    let from = match m {
+        Move::Normal { from, .. } => *from as usize,
+        Move::EnPassant { from, .. } => *from as usize,
+        Move::Castle { king, .. } => *king as usize,
+        Move::Put { .. } => 0,
+    };
+    let to = match m {
+        Move::Normal { to, .. } => *to as usize,
+        Move::EnPassant { to, .. } => *to as usize,
+        Move::Castle { rook, .. } => *rook as usize,
+        Move::Put { to, .. } => *to as usize,
+    };
+    (from, to)
 }
 
 /// Pack a move into u16 for TT storage and killer comparison.
@@ -229,6 +294,81 @@ mod tests {
             assert_eq!(picker.killer_moves[5][0], Some(pack_move(m2)));
             assert_eq!(picker.killer_moves[5][1], Some(pack_move(m1)));
         }
+    }
+
+    #[test]
+    fn history_updates_on_cutoff() {
+        let mut picker = MovePicker::new();
+        let pos = Chess::default();
+        let moves = pos.legal_moves();
+        let quiet: Vec<Move> = moves.iter().filter(|m| !m.is_capture()).cloned().collect();
+        if let Some(m) = quiet.first() {
+            picker.update_history(m, 5, true);
+            let (from, to) = move_squares(m);
+            assert_eq!(picker.history[from][to], 25, "History bonus = depth^2 = 25");
+        }
+    }
+
+    #[test]
+    fn history_clamped_to_max() {
+        let mut picker = MovePicker::new();
+        let pos = Chess::default();
+        let moves = pos.legal_moves();
+        let quiet: Vec<Move> = moves.iter().filter(|m| !m.is_capture()).cloned().collect();
+        if let Some(m) = quiet.first() {
+            for _ in 0..1000 {
+                picker.update_history(m, 20, true);
+            }
+            let (from, to) = move_squares(m);
+            assert_eq!(picker.history[from][to], HISTORY_MAX);
+        }
+    }
+
+    #[test]
+    fn history_affects_quiet_ordering() {
+        let mut picker = MovePicker::new();
+        let pos = pos_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        let moves = pos.legal_moves();
+        let quiet: Vec<Move> = moves.iter().filter(|m| !m.is_capture()).cloned().collect();
+        if quiet.len() >= 2 {
+            // Boost second quiet move's history
+            picker.update_history(&quiet[1], 10, true); // +100
+            let ordered = picker.order_moves(&moves, 0, None);
+            let idx0 = ordered.iter().position(|m| pack_move(m) == pack_move(&quiet[0]));
+            let idx1 = ordered.iter().position(|m| pack_move(m) == pack_move(&quiet[1]));
+            if let (Some(i0), Some(i1)) = (idx0, idx1) {
+                assert!(i1 < i0, "Quiet with higher history should sort first");
+            }
+        }
+    }
+
+    #[test]
+    fn losing_capture_scores_below_quiet() {
+        // QxP where pawn is defended: SEE = 100 - 900 = -800
+        // Score = LOSING_CAPTURE_BASE + (-800) = -1800
+        // Quiet = 0, so losing capture sorts after quiet
+        let see = 100 - 900; // pawn victim, queen attacker
+        let losing_score = LOSING_CAPTURE_BASE + see;
+        assert!(losing_score < 0, "Losing capture ({}) should score below quiet (0)", losing_score);
+    }
+
+    #[test]
+    fn winning_capture_scores_above_quiet() {
+        // PxQ: SEE = 900 - 100 = 800 (winning)
+        // Score = CAPTURE_BASE + MVV-LVA = 10000+ (always above quiet)
+        let see = 900 - 100;
+        assert!(see >= 0, "PxQ should be winning SEE");
+        // Winning captures get CAPTURE_BASE + MVV-LVA
+        let score = 900 * 10 - 100 + CAPTURE_BASE; // 18900
+        assert!(score > KILLER_SCORE, "Winning capture ({}) should score above killers ({})", score, KILLER_SCORE);
+    }
+
+    #[test]
+    fn clear_resets_history() {
+        let mut picker = MovePicker::new();
+        picker.history[10][20] = 500;
+        picker.clear();
+        assert_eq!(picker.history[10][20], 0);
     }
 
     #[test]

@@ -1,5 +1,6 @@
-use shakmaty::{Chess, Color, Move, MoveList, Position, Role};
+use shakmaty::{Bitboard, Chess, CastlingMode, Color, FromSetup, Move, MoveList, Position, Role, Setup};
 use shakmaty::zobrist::{ZobristHash, Zobrist64};
+use std::num::NonZeroU32;
 use crate::eval::{evaluate, piece_value, CHECKMATE, DRAW};
 use crate::movepick::{MovePicker, pack_move};
 use crate::tablebase::TablebaseProber;
@@ -18,6 +19,10 @@ const LMR_REDUCTION: i32 = 1;   // Reduce by 1 ply
 
 // Aspiration Windows — DD07 (v0.0.2)
 const ASPIRATION_WINDOW: i32 = 50; // Initial window in centipawns
+
+// Null Move Pruning — DD05 (v0.0.3)
+const NULL_MOVE_R: i32 = 2;          // Null move reduction
+const MATE_THRESHOLD: i32 = 900_000; // Don't null-move prune near mate scores
 
 const INF: i32 = i32::MAX - 1;
 const NEG_INF: i32 = i32::MIN + 1;
@@ -273,6 +278,35 @@ fn root_search(
 }
 
 // ============================================================================
+// Null Move Pruning helpers — DD05
+// ============================================================================
+
+/// Zugzwang detection: side to move has at least one piece beyond king+pawns.
+/// If false, skip null move — pure K+P endgames can have zugzwang.
+fn has_non_pawn_pieces(pos: &Chess) -> bool {
+    let board = pos.board();
+    let stm = board.by_color(pos.turn());
+    let non_pawn = stm & !(board.pawns() | board.kings());
+    !non_pawn.is_empty()
+}
+
+/// Create a position with the turn flipped (null move = passing).
+fn make_null_move_pos(pos: &Chess) -> Option<Chess> {
+    let setup = Setup {
+        board: pos.board().clone(),
+        promoted: Bitboard::EMPTY,
+        pockets: None,
+        turn: !pos.turn(),
+        castling_rights: pos.castles().castling_rights(),
+        ep_square: None,
+        remaining_checks: None,
+        halfmoves: pos.halfmoves(),
+        fullmoves: pos.fullmoves(),
+    };
+    Chess::from_setup(setup, CastlingMode::Standard).ok()
+}
+
+// ============================================================================
 // Negamax with PVS + TT + Killers + Check Extensions
 // ============================================================================
 
@@ -372,12 +406,26 @@ fn negamax(
         tt_move = None;
     }
 
+    // Null move pruning — DD05
+    // Conditions: depth >= 3, not in check, has non-pawn pieces, beta not mate score
+    if depth >= 3 && !in_check && has_non_pawn_pieces(pos) && beta.abs() < MATE_THRESHOLD {
+        if let Some(null_pos) = make_null_move_pos(pos) {
+            // Search with null window around beta, reduced depth
+            let null_score = -negamax(&null_pos, -beta, -beta + 1, depth - 1 - NULL_MOVE_R,
+                                       ply + 1, extensions, tt, picker, tb, tm, history, stats);
+            if null_score >= beta {
+                return beta; // Null move cutoff
+            }
+        }
+    }
+
     // Move ordering
     let ordered = picker.order_moves(&moves, ply as u8, tt_move);
 
     let original_alpha = alpha;
     let mut best_score = NEG_INF;
     let mut best_move: u16 = 0;
+    let mut searched_quiets: Vec<Move> = Vec::new();
 
     for (i, m) in ordered.iter().enumerate() {
         let mut new_pos = pos.clone();
@@ -432,9 +480,21 @@ fn negamax(
             alpha = score;
         }
 
+        // Track searched quiet moves for history penalty on cutoff
+        if is_quiet {
+            searched_quiets.push(m.clone());
+        }
+
         if alpha >= beta {
-            if !m.is_capture() && !m.is_promotion() {
+            if is_quiet {
                 picker.store_killer(m, ply as u8);
+                // History: reward cutoff move, penalize other searched quiets
+                picker.update_history(m, depth as u8, true);
+                for sq in &searched_quiets {
+                    if pack_move(sq) != pack_move(m) {
+                        picker.update_history(sq, depth as u8, false);
+                    }
+                }
             }
             break;
         }
@@ -907,6 +967,34 @@ mod tests {
         let (score, mv) = alpha_beta_search(&pos, 4, None, &mut stats);
         assert!(mv.is_some(), "LMR search should still return a move");
         assert!(score > -CHECKMATE && score < CHECKMATE, "Score should be reasonable with LMR");
+    }
+
+    #[test]
+    fn null_move_constants_correct() {
+        assert_eq!(NULL_MOVE_R, 2);
+        assert_eq!(MATE_THRESHOLD, 900_000);
+    }
+
+    #[test]
+    fn null_move_skipped_in_kpk() {
+        // KPK endgame — only king and pawns, zugzwang possible
+        let pos = pos_from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1");
+        assert!(!has_non_pawn_pieces(&pos), "KPK should NOT have non-pawn pieces for white");
+    }
+
+    #[test]
+    fn null_move_fires_with_pieces() {
+        // Position with knight — null move should be allowed
+        let pos = pos_from_fen("4k3/8/8/8/8/5N2/8/4K3 w - - 0 1");
+        assert!(has_non_pawn_pieces(&pos), "Position with knight should have non-pawn pieces");
+    }
+
+    #[test]
+    fn null_move_position_created_correctly() {
+        let pos = pos_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        let null_pos = make_null_move_pos(&pos).expect("Should create null move position");
+        assert_eq!(null_pos.turn(), Color::White, "Turn should be flipped");
+        assert_eq!(null_pos.board(), pos.board(), "Board should be unchanged");
     }
 
     #[test]

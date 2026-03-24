@@ -166,3 +166,56 @@ Ready for STEP 0 → copy verified engine skeleton → build milestones.
 - Clean build, all frozen values intact
 
 ### REPORT_v002.md WRITTEN — v0.0.2 BUILD COMPLETE
+
+---
+
+## 2026-03-24 — v0.0.3 COMPLETE: Null Move Pruning + History Heuristic + SEE
+
+Context: CHPawn went 0-19 against 2200 ELO engines. Root cause: depth gap.
+Opponents reaching depth 14, CHPawn reaching depth 9. This session closes the gap.
+
+### Feature 1 — Null Move Pruning (DD05)
+- R=2 (null move reduction)
+- Conditions: depth >= 3, not in check, has non-pawn pieces, beta not mate
+- Zugzwang detection: has_non_pawn_pieces() — skip if only K+P
+- MATE_THRESHOLD=900,000
+- make_null_move_pos() via shakmaty Setup (flip turn, clear EP)
+- Tests: 4 new (constants, zugzwang skip, pieces detect, position creation)
+- Dead end DE-7 added: null move in zugzwang positions
+
+### Feature 2 — History Heuristic (DD-HISTORY)
+- history[from][to] table, 64x64, clamped to [-16384, 16384]
+- Bonus = depth * depth
+- On beta cutoff: reward cutoff move, penalize other searched quiets
+- Quiet move ordering uses history score (replaces flat 0)
+- Tests: 4 new (update, clamp, ordering, clear)
+
+### Feature 3 — SEE Capture Ordering (DD-SEE)
+- Simple SEE: captured_value - attacker_value
+- Winning captures (SEE >= 0): CAPTURE_BASE + MVV-LVA (as before)
+- Losing captures (SEE < 0): LOSING_CAPTURE_BASE + SEE (below quiet moves)
+- Stops wasting time on Qxp-defended-by-pawn
+- Tests: 2 new (losing below quiet, winning above killers)
+
+### Sigma Gates (50-position benchmark)
+- Gate 1: illegal_moves = 0 → PASS
+- Gate 2: pass_rate = 50/50 (100%) → PASS
+- Gate 3: pruning_rate = 100% → PASS
+- Gate 4: max_time = 3725ms → PASS
+- ALL SIGMA GATES PASSED
+
+### Test Suite
+- 64/64 tests pass (was 54 in v0.0.2, +10 new)
+- Zero regressions
+
+### Frozen Value Verification
+- BISHOP=300, KNIGHT=300 ✓
+- DELTA=200, MAX_EXTENSIONS=4 ✓
+- MCTS grep: 0 hits ✓
+- Neural grep: 0 hits ✓
+- No piece value drift ✓
+
+### FALSE POSITIVES CAUGHT: None
+- Clean build, all frozen values intact
+
+### REPORT_v003.md WRITTEN — v0.0.3 BUILD COMPLETE

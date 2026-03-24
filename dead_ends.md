@@ -40,3 +40,11 @@
 **What**: fn quiescence(pos, alpha, beta, depth: u8) with depth cap
 **Why dead end**: Quiescence is unbounded per frozen spec.
 **Do NOT add**: depth parameter to quiescence function
+
+## DEAD END 7 — Null move in zugzwang positions (v0.0.3)
+**What**: Applying null move pruning when side to move has only king and pawns
+**Why dead end**: Pure K+P endgames have frequent zugzwang. Null move pruning
+                  incorrectly assumes passing is always worse than making a move.
+                  This breaks sigma gate endgame positions.
+**Detection**: has_non_pawn_pieces() returns false → skip null move
+**Do NOT apply**: null move when STM has no pieces beyond king + pawns
