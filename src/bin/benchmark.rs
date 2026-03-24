@@ -7,7 +7,7 @@ use chpawn_frozen_king::search::{alpha_beta_search, minimax, SearchStats, MAX_DE
 use chpawn_frozen_king::tablebase::TablebaseProber;
 use std::time::Instant;
 
-// 30 benchmark positions — same as Python engine
+// 50 benchmark positions — expanded sigma gate battery
 const KQVK: [&str; 10] = [
     "4k3/8/8/8/8/8/8/3QK3 w - - 0 1",
     "k7/8/8/8/8/8/8/KQ6 w - - 0 1",
@@ -45,6 +45,42 @@ const KQVKR: [&str; 10] = [
     "7k/7r/8/8/8/8/8/3QK3 w - - 0 1",
     "7k/6r1/8/8/8/8/8/4KQ2 w - - 0 1",
     "4k2r/8/8/8/8/8/8/3QK3 w - - 0 1",
+];
+
+// KBBvK — two bishops vs king (opposite-color bishops — forced mate)
+const KBBVK: [&str; 5] = [
+    "4k3/8/8/8/3BB3/8/8/4K3 w - - 0 1",
+    "k7/8/8/8/8/2BB4/8/4K3 w - - 0 1",
+    "6k1/8/8/1BB5/8/4K3/8/8 w - - 0 1",
+    "8/7k/8/8/2BB4/8/8/3K4 w - - 0 1",
+    "8/k7/8/3BB3/8/8/4K3/8 w - - 0 1",
+];
+
+// KBNvK — bishop and knight vs king (hardest basic checkmate)
+const KBNVK: [&str; 5] = [
+    "4k3/8/8/8/3B4/5N2/8/4K3 w - - 0 1",
+    "k7/8/8/8/8/1BN5/8/3K4 w - - 0 1",
+    "7k/8/8/8/2B5/3NK3/8/8 w - - 0 1",
+    "8/k7/8/5B2/4N3/8/4K3/8 w - - 0 1",
+    "7k/8/8/3B4/8/4N3/8/5K2 w - - 0 1",
+];
+
+// KQvKB — queen vs bishop
+const KQVKB: [&str; 5] = [
+    "4kb2/8/8/8/8/8/8/3QK3 w - - 0 1",
+    "k7/1b6/8/8/8/8/8/KQ6 w - - 0 1",
+    "8/8/4k3/5b2/8/8/8/3QK3 w - - 0 1",
+    "7k/6b1/8/8/8/8/8/4KQ2 w - - 0 1",
+    "2b1k3/8/8/8/8/8/8/3QK3 w - - 0 1",
+];
+
+// KQvKN — queen vs knight
+const KQVKN: [&str; 5] = [
+    "4k1n1/8/8/8/8/8/8/3QK3 w - - 0 1",
+    "k7/2n5/8/8/8/8/8/KQ6 w - - 0 1",
+    "8/8/4k3/3n4/8/8/8/3QK3 w - - 0 1",
+    "7k/5n2/8/8/8/8/8/4KQ2 w - - 0 1",
+    "3nk3/8/8/8/8/8/8/3QK3 w - - 0 1",
 ];
 
 fn pos_from_fen(fen: &str) -> Chess {
@@ -94,6 +130,10 @@ fn main() {
         .map(|f| (*f, "KQvK"))
         .chain(KRVK.iter().map(|f| (*f, "KRvK")))
         .chain(KQVKR.iter().map(|f| (*f, "KQvKR")))
+        .chain(KBBVK.iter().map(|f| (*f, "KBBvK")))
+        .chain(KBNVK.iter().map(|f| (*f, "KBNvK")))
+        .chain(KQVKB.iter().map(|f| (*f, "KQvKB")))
+        .chain(KQVKN.iter().map(|f| (*f, "KQvKN")))
         .collect();
 
     let mut results: Vec<BenchResult> = Vec::new();

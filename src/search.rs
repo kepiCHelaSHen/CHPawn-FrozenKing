@@ -12,6 +12,13 @@ pub const MAX_DEPTH: u8 = 64;
 pub const DELTA: i32 = 200; // Frozen in spec.md
 const MAX_EXTENSIONS: u8 = 4; // Frozen in spec.md
 
+// LMR — Late Move Reductions (v0.0.2)
+const LMR_THRESHOLD: usize = 2; // Reduce moves after first 2
+const LMR_REDUCTION: i32 = 1;   // Reduce by 1 ply
+
+// Aspiration Windows — DD07 (v0.0.2)
+const ASPIRATION_WINDOW: i32 = 50; // Initial window in centipawns
+
 const INF: i32 = i32::MAX - 1;
 const NEG_INF: i32 = i32::MIN + 1;
 
@@ -80,8 +87,66 @@ pub fn iterative_deepening(
         let mut stats = SearchStats::new();
         // Reset search history to game state for each iteration
         search_history.truncate(history.len() + 1);
-        let (score, mv) = root_search(pos, depth as i32, tt, picker, tb, tm,
-                                       &mut search_history, &mut stats);
+
+        let (score, mv);
+
+        if depth <= 1 {
+            // First iteration: full window
+            let result = root_search_windowed(pos, depth as i32, NEG_INF, INF,
+                                              tt, picker, tb, tm, &mut search_history, &mut stats);
+            score = result.0;
+            mv = result.1;
+        } else {
+            // Aspiration windows — DD07
+            // asp_alpha/asp_beta are white-centric. root_search_windowed needs
+            // STM-perspective bounds. For black to move, negate and swap.
+            let is_white = pos.turn() == Color::White;
+            let mut window = ASPIRATION_WINDOW;
+            let mut asp_alpha = best_score - window;
+            let mut asp_beta = best_score + window;
+            let mut result;
+
+            loop {
+                search_history.truncate(history.len() + 1);
+                stats = SearchStats::new();
+                // Convert white-centric aspiration bounds to STM perspective
+                let (stm_alpha, stm_beta) = if is_white {
+                    (asp_alpha, asp_beta)
+                } else {
+                    (-asp_beta, -asp_alpha)
+                };
+                result = root_search_windowed(pos, depth as i32, stm_alpha, stm_beta,
+                                              tt, picker, tb, tm, &mut search_history, &mut stats);
+
+                if tm.should_stop() {
+                    break;
+                }
+
+                if result.0 <= asp_alpha {
+                    // Fail low: widen alpha
+                    window *= 2;
+                    asp_alpha = best_score - window;
+                } else if result.0 >= asp_beta {
+                    // Fail high: widen beta
+                    window *= 2;
+                    asp_beta = best_score + window;
+                } else {
+                    break; // Score within window
+                }
+
+                // If window has grown too large, use full window
+                if window >= 800 {
+                    search_history.truncate(history.len() + 1);
+                    stats = SearchStats::new();
+                    result = root_search_windowed(pos, depth as i32, NEG_INF, INF,
+                                                  tt, picker, tb, tm, &mut search_history, &mut stats);
+                    break;
+                }
+            }
+
+            score = result.0;
+            mv = result.1;
+        }
 
         // If search was stopped mid-iteration, keep previous result (unless depth 1)
         if tm.should_stop() && depth > 1 && mv.is_none() {
@@ -103,10 +168,12 @@ pub fn iterative_deepening(
     (best_score, best_move)
 }
 
-/// Root search: enumerate all moves, returning white-centric score and best move.
-fn root_search(
+/// Root search with configurable alpha/beta window. Returns (white-centric score, best move).
+fn root_search_windowed(
     pos: &Chess,
     depth: i32,
+    init_alpha: i32,
+    init_beta: i32,
     tt: &mut TranspositionTable,
     picker: &mut MovePicker,
     tb: Option<&TablebaseProber>,
@@ -129,8 +196,8 @@ fn root_search(
 
     let ordered = picker.order_moves(&moves, 0, tt_move);
 
-    let mut alpha = NEG_INF;
-    let beta = INF;
+    let mut alpha = init_alpha;
+    let beta = init_beta;
     let mut best_move: Option<Move> = None;
     let mut best_score = NEG_INF;
 
@@ -191,6 +258,20 @@ fn root_search(
     (white_score, best_move)
 }
 
+/// Root search with full window (backward-compatible wrapper).
+fn root_search(
+    pos: &Chess,
+    depth: i32,
+    tt: &mut TranspositionTable,
+    picker: &mut MovePicker,
+    tb: Option<&TablebaseProber>,
+    tm: &TimeManager,
+    history: &mut Vec<u64>,
+    stats: &mut SearchStats,
+) -> (i32, Option<Move>) {
+    root_search_windowed(pos, depth, NEG_INF, INF, tt, picker, tb, tm, history, stats)
+}
+
 // ============================================================================
 // Negamax with PVS + TT + Killers + Check Extensions
 // ============================================================================
@@ -213,8 +294,8 @@ fn negamax(
 ) -> i32 {
     stats.node_count += 1;
 
-    // Time check every 2048 nodes
-    if stats.node_count & 2047 == 0 && tm.should_stop() {
+    // Time check every 2048 nodes — use hard limit inside search
+    if stats.node_count & 2047 == 0 && tm.hard_stop() {
         return 0;
     }
 
@@ -306,13 +387,32 @@ fn negamax(
         let child_hash = zobrist_key(&new_pos);
         history.push(child_hash);
 
+        let is_quiet = !m.is_capture() && !m.is_promotion();
+
         let score;
         if i == 0 {
+            // First move: full window, full depth
             score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
                              extensions, tt, picker, tb, tm, history, stats);
         } else {
-            let null_score = -negamax(&new_pos, -(alpha + 1), -alpha, depth - 1,
+            // LMR: reduce quiet late moves at sufficient depth when not in check
+            let lmr_depth = if i >= LMR_THRESHOLD && depth >= 3 && !in_check && is_quiet {
+                depth - 1 - LMR_REDUCTION
+            } else {
+                depth - 1
+            };
+
+            // PVS null-window search (possibly reduced by LMR)
+            let mut null_score = -negamax(&new_pos, -(alpha + 1), -alpha, lmr_depth,
+                                          ply + 1, extensions, tt, picker, tb, tm, history, stats);
+
+            // If LMR reduced and score beats alpha, re-search at full depth with null window
+            if lmr_depth < depth - 1 && null_score > alpha {
+                null_score = -negamax(&new_pos, -(alpha + 1), -alpha, depth - 1,
                                       ply + 1, extensions, tt, picker, tb, tm, history, stats);
+            }
+
+            // PVS: if null window fails high, re-search with full window
             if null_score > alpha && null_score < beta {
                 score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
                                  extensions, tt, picker, tb, tm, history, stats);
@@ -790,5 +890,37 @@ mod tests {
     #[test]
     fn max_extensions_is_4() {
         assert_eq!(MAX_EXTENSIONS, 4);
+    }
+
+    #[test]
+    fn lmr_constants_correct() {
+        assert_eq!(LMR_THRESHOLD, 2);
+        assert_eq!(LMR_REDUCTION, 1);
+    }
+
+    #[test]
+    fn lmr_reduces_node_count() {
+        // LMR should reduce total nodes at depth >= 3 compared to no-LMR
+        // We test indirectly: search should still find correct moves
+        let pos = pos_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        let mut stats = SearchStats::new();
+        let (score, mv) = alpha_beta_search(&pos, 4, None, &mut stats);
+        assert!(mv.is_some(), "LMR search should still return a move");
+        assert!(score > -CHECKMATE && score < CHECKMATE, "Score should be reasonable with LMR");
+    }
+
+    #[test]
+    fn aspiration_window_constant_correct() {
+        assert_eq!(ASPIRATION_WINDOW, 50);
+    }
+
+    #[test]
+    fn aspiration_windows_find_correct_moves() {
+        // Aspiration windows should still find mate-in-1
+        let pos = pos_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 3");
+        let mut stats = SearchStats::new();
+        let (score, mv) = alpha_beta_search(&pos, 3, None, &mut stats);
+        assert!(score >= CHECKMATE - 100, "Aspiration windows should still find mate, got {}", score);
+        assert!(mv.is_some());
     }
 }

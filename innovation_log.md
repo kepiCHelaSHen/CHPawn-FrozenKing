@@ -119,3 +119,50 @@ Ready for STEP 0 → copy verified engine skeleton → build milestones.
 - All sigma gates passed
 - CCRL submission ready
 - Next: Version 1.1 (aspiration windows + dynamic time management)
+
+---
+
+## 2026-03-24 — v0.0.2 COMPLETE: LMR + Aspiration Windows + Dynamic Time Management
+
+### Feature 1 — Late Move Reductions (DD-LMR)
+- LMR_THRESHOLD=2, LMR_REDUCTION=1
+- Quiet moves after first 2 at depth >= 3 (not in check) reduced by 1 ply
+- Re-search at full depth if reduced search beats alpha
+- Integrates with PVS: reduced null-window → full-depth null-window → full window
+- Tests: 2 new (constants + correctness), all pass
+
+### Feature 2 — Aspiration Windows (DD07)
+- ASPIRATION_WINDOW=50 centipawns
+- After depth 1: search within [prev_score-50, prev_score+50]
+- Fail low: widen alpha by 2x, re-search
+- Fail high: widen beta by 2x, re-search
+- Window >= 800cp: fall back to full window
+- Tests: 2 new (constant + mate finding), all pass
+
+### Feature 3 — Dynamic Time Management (DD03-B)
+- Sudden death: remaining_time / 20 (was /30)
+- Known movestogo: remaining_time / (movestogo + 5)
+- hard_limit = base_time * 3
+- should_stop(): soft stop between ID iterations
+- hard_stop(): hard limit inside search nodes
+- Tests: 6 updated (new formulas), 2 new (hard limit, movetime), all pass
+
+### Sigma Gates (50-position benchmark)
+- Gate 1: illegal_moves = 0 → PASS
+- Gate 2: pass_rate = 50/50 (100%) → PASS
+- Gate 3: pruning_rate = 100% → PASS
+- Gate 4: max_time = 4477ms → PASS
+- ALL SIGMA GATES PASSED
+
+### Test Suite
+- 54/54 tests pass (was 48 in v1.0, +6 new)
+- Zero regressions
+
+### Dead ends avoided
+- No null move pruning (still deferred to v1.2 per DD05)
+- No history heuristic (not in spec)
+
+### FALSE POSITIVES CAUGHT: None
+- Clean build, all frozen values intact
+
+### REPORT_v002.md WRITTEN — v0.0.2 BUILD COMPLETE

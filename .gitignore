@@ -1,5 +1,5 @@
 target/
+target_v002/
 *.pdb
 *.d
-Cargo.lock
 syzygy/

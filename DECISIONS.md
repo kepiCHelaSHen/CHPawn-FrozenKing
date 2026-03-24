@@ -104,17 +104,25 @@ Frozen spec:
 ---
 
 ## DD03 — Time Management (Option A — Simple)
-Decision:   YES, Option A
+Decision:   YES, Option A — superseded by DD03-B in v0.0.2
 Date:       2026-03-23
 Est. ELO:   Required for CCRL
 
-Frozen spec:
+Original spec (v1.0):
   time_per_move = remaining_time / 30
-  Hard stop when elapsed > time_per_move
-  Always output bestmove before hard stop
-  Handle: wtime, btime, movestogo, movetime, depth
 
-Backlog: DD03-B dynamic time management — version 1.1
+## DD03-B — Dynamic Time Management
+Decision:   YES — DONE in v0.0.2
+Date:       2026-03-24
+Est. ELO:   +10-20
+
+Frozen spec:
+  base_time = remaining_time / 20  (sudden death)
+  base_time = remaining_time / (movestogo + 5)  (known movestogo)
+  hard_limit = base_time * 3  (never think longer than this)
+  movetime: budget = movetime, no hard limit multiplier
+  should_stop(): soft stop at base budget (between ID iterations)
+  hard_stop(): never exceed hard_limit (inside search nodes)
 
 ---
 
@@ -162,12 +170,16 @@ Frozen spec:
 ---
 
 ## DD07 — Aspiration Windows
-Decision:   SAVE for version 1.1
-Date:       2026-03-23
+Decision:   YES — DONE in v0.0.2
+Date:       2026-03-24
 Est. ELO:   +20-40
 
-Reason: 1.0 already lands 2200-2600. Clean 1.1 story.
-Backlog: Pair with DD03-B in version 1.1.
+Frozen spec:
+  Initial window: 50 centipawns around previous iteration score
+  Fail low: widen alpha by 2x, re-search
+  Fail high: widen beta by 2x, re-search
+  Window >= 800cp: fall back to full window
+  Depth 1 always uses full window
 
 ---
 
@@ -219,12 +231,29 @@ Frozen spec:
   Apply at all nodes except quiescence
   Works with TT, killers, MVV-LVA already locked in
 
+## DD-LMR — Late Move Reductions
+Decision:   YES — DONE in v0.0.2
+Date:       2026-03-24
+Est. ELO:   +30-50
+
+Frozen spec:
+  LMR_THRESHOLD = 2 (reduce moves after first 2)
+  LMR_REDUCTION = 1 (reduce by 1 ply)
+  Conditions: move_index >= 2 AND depth >= 3 AND not in check AND move is quiet
+  Reduced search: depth - 2 instead of depth - 1
+  If reduced search > alpha: re-search at full depth - 1
+  Integrates with PVS: reduced null-window first, then full-depth null-window,
+  then full-window if needed
+
+---
+
 ================================================================================
 VERSION 1.0 SUMMARY
 ================================================================================
 
-Features: DD01+DD02+DD03A+DD04+DD06+DD08+DD09+DD10
-Deferred: DD05(1.2), DD07(1.1), DD03B(1.1)
+Features v1.0: DD01+DD02+DD03A+DD04+DD06+DD08+DD09+DD10
+Features v0.0.2: +DD-LMR+DD07+DD03B
+Deferred: DD05(1.2)
 
 ELO estimate:
   Rust verified baseline:       ~1400-1600
@@ -258,9 +287,8 @@ ITERATION ROADMAP
 ================================================================================
 
 1.0 — Ship. Get on CCRL. Log the ELO.
-1.1 — Aspiration windows + dynamic time management (DD07 + DD03B)
+0.0.2 — LMR + Aspiration windows + Dynamic time management (DD-LMR + DD07 + DD03B) — DONE
 1.2 — Null move pruning with zugzwang detection (DD05)
-1.3 — Late move reductions
 1.x — Climb weekly. Every change CHP-verified. Every ELO delta logged.
 
 ================================================================================
@@ -273,3 +301,6 @@ CHANGE LOG
              RESEARCH.md: Viridithas TT spec adopted for DD04
              CCRL rules locked in
              Ready to build.
+2026-03-24 — v0.0.2 features added: LMR, Aspiration Windows, Dynamic Time Management.
+             50/50 benchmark pass (100%). All sigma gates pass.
+             DD03-B, DD07, DD-LMR all locked.

@@ -1,8 +1,9 @@
-/// Time Management — CHPawn-FrozenKing v1.0
-/// Per DECISIONS.md DD03 (Option A) and frozen/spec.md:
-///   budget = remaining_time / 30
-///   If movetime provided: budget = movetime
-///   No dynamic adjustment (that's DD03-B, version 1.1).
+/// Time Management — CHPawn-FrozenKing v0.0.2
+/// Per DECISIONS.md DD03-B (Dynamic):
+///   base_time = remaining_time / 20  (sudden death)
+///   base_time = remaining_time / (movestogo + 5)  (known movestogo)
+///   hard_limit = base_time * 3  (never exceed this)
+///   If movetime provided: budget = movetime (no hard limit)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use std::time::Instant;
 pub struct TimeManager {
     start: Instant,
     budget_ms: u64,
+    hard_limit_ms: u64,
     stop_flag: Arc<AtomicBool>,
 }
 
@@ -28,17 +30,27 @@ impl TimeManager {
         is_white: bool,
         stop_flag: Arc<AtomicBool>,
     ) -> Self {
-        let budget_ms = if let Some(mt) = movetime {
-            mt
+        if let Some(mt) = movetime {
+            return TimeManager {
+                start: Instant::now(),
+                budget_ms: mt,
+                hard_limit_ms: mt,
+                stop_flag,
+            };
+        }
+
+        let remaining = if is_white { wtime } else { btime };
+        let base_time = if movestogo > 0 {
+            remaining / (movestogo + 5)
         } else {
-            let remaining = if is_white { wtime } else { btime };
-            let divisor = if movestogo > 0 { movestogo } else { 30 };
-            remaining / divisor
+            remaining / 20
         };
+        let hard_limit = base_time * 3;
 
         TimeManager {
             start: Instant::now(),
-            budget_ms,
+            budget_ms: base_time,
+            hard_limit_ms: hard_limit,
             stop_flag,
         }
     }
@@ -48,6 +60,7 @@ impl TimeManager {
         TimeManager {
             start: Instant::now(),
             budget_ms: u64::MAX,
+            hard_limit_ms: u64::MAX,
             stop_flag,
         }
     }
@@ -56,8 +69,14 @@ impl TimeManager {
         self.start.elapsed().as_millis() as u64
     }
 
+    /// Soft stop: exceeded base budget. Used between ID iterations.
     pub fn should_stop(&self) -> bool {
         self.stop_flag.load(Ordering::Relaxed) || self.elapsed_ms() >= self.budget_ms
+    }
+
+    /// Hard stop: never think longer than this.
+    pub fn hard_stop(&self) -> bool {
+        self.stop_flag.load(Ordering::Relaxed) || self.elapsed_ms() >= self.hard_limit_ms
     }
 }
 
@@ -93,29 +112,44 @@ mod tests {
     #[test]
     fn white_uses_wtime() {
         let tm = TimeManager::new(30000, 60000, 0, None, true, make_stop_flag());
-        // Budget = 30000 / 30 = 1000ms
-        assert_eq!(tm.budget_ms, 1000);
+        // Budget = 30000 / 20 = 1500ms (DD03-B sudden death)
+        assert_eq!(tm.budget_ms, 1500);
     }
 
     #[test]
     fn black_uses_btime() {
         let tm = TimeManager::new(30000, 60000, 0, None, false, make_stop_flag());
-        // Budget = 60000 / 30 = 2000ms
-        assert_eq!(tm.budget_ms, 2000);
+        // Budget = 60000 / 20 = 3000ms (DD03-B sudden death)
+        assert_eq!(tm.budget_ms, 3000);
     }
 
     #[test]
-    fn division_is_by_30() {
-        let tm = TimeManager::new(9000, 9000, 0, None, true, make_stop_flag());
-        // 9000 / 30 = 300
-        assert_eq!(tm.budget_ms, 300);
+    fn sudden_death_divides_by_20() {
+        let tm = TimeManager::new(10000, 10000, 0, None, true, make_stop_flag());
+        // 10000 / 20 = 500
+        assert_eq!(tm.budget_ms, 500);
     }
 
     #[test]
-    fn movestogo_used_when_nonzero() {
+    fn movestogo_divides_by_movestogo_plus_5() {
         let tm = TimeManager::new(60000, 60000, 40, None, true, make_stop_flag());
-        // 60000 / 40 = 1500
-        assert_eq!(tm.budget_ms, 1500);
+        // 60000 / (40 + 5) = 60000 / 45 = 1333
+        assert_eq!(tm.budget_ms, 1333);
+    }
+
+    #[test]
+    fn hard_limit_is_3x_budget() {
+        let tm = TimeManager::new(60000, 60000, 0, None, true, make_stop_flag());
+        // budget = 60000 / 20 = 3000, hard_limit = 3000 * 3 = 9000
+        assert_eq!(tm.budget_ms, 3000);
+        assert_eq!(tm.hard_limit_ms, 9000);
+    }
+
+    #[test]
+    fn movetime_sets_hard_limit_equal() {
+        let tm = TimeManager::new(60000, 60000, 0, Some(500), true, make_stop_flag());
+        assert_eq!(tm.budget_ms, 500);
+        assert_eq!(tm.hard_limit_ms, 500);
     }
 
     #[test]
