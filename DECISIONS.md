@@ -278,6 +278,52 @@ Frozen spec:
 
 ---
 
+## DD-PASSED-PAWNS — Passed Pawn Bonuses
+Decision:   YES — DONE in v0.0.4
+Date:       2026-03-24
+Est. ELO:   +20-40
+Source:     chessprogramming.org/Passed_Pawns
+Frozen spec: PASSED_PAWN_BONUS = [0, 10, 20, 30, 50, 75, 100, 0]
+
+---
+
+## DD-PAWN-STRUCTURE — Pawn Structure Penalties
+Decision:   YES — DONE in v0.0.4
+Date:       2026-03-24
+Est. ELO:   +15-25
+Source:     chessprogramming.org/Pawn_Structure
+Frozen spec: DOUBLED_PAWN_PENALTY = -20, ISOLATED_PAWN_PENALTY = -15
+
+---
+
+## DD-ROOK-FILES — Rook on Open/Semi-Open File
+Decision:   YES — DONE in v0.0.4
+Date:       2026-03-24
+Est. ELO:   +10-20
+Source:     chessprogramming.org/Rook_on_Open_File
+Frozen spec: ROOK_OPEN_FILE_BONUS = 25, ROOK_SEMI_OPEN_FILE_BONUS = 10
+
+---
+
+## DD-BISHOP-PAIR — Bishop Pair Bonus
+Decision:   YES — DONE in v0.0.4
+Date:       2026-03-24
+Est. ELO:   +5-15
+Source:     chessprogramming.org/Bishop_Pair
+Frozen spec: BISHOP_PAIR_BONUS = 50
+
+---
+
+## DD-KING-SAFETY — King Safety Evaluation
+Decision:   YES — DONE in v0.0.4
+Date:       2026-03-24
+Est. ELO:   +15-30
+Source:     chessprogramming.org/King_Safety (simplified)
+Frozen spec: KING_ATTACKER_PENALTY = -10, KING_SHIELD_BONUS = 10
+             Only applied in middlegame (queens on board)
+
+---
+
 ================================================================================
 VERSION 1.0 SUMMARY
 ================================================================================
@@ -285,6 +331,7 @@ VERSION 1.0 SUMMARY
 Features v1.0: DD01+DD02+DD03A+DD04+DD06+DD08+DD09+DD10
 Features v0.0.2: +DD-LMR+DD07+DD03B
 Features v0.0.3: +DD05+DD-HISTORY+DD-SEE
+Features v0.0.4: +DD-PASSED-PAWNS+DD-PAWN-STRUCTURE+DD-ROOK-FILES+DD-BISHOP-PAIR+DD-KING-SAFETY
 Deferred: none
 
 ELO estimate:
@@ -321,6 +368,7 @@ ITERATION ROADMAP
 1.0 — Ship. Get on CCRL. Log the ELO.
 0.0.2 — LMR + Aspiration windows + Dynamic time management (DD-LMR + DD07 + DD03B) — DONE
 0.0.3 — Null move pruning + History heuristic + SEE (DD05 + DD-HISTORY + DD-SEE) — DONE
+0.0.4 — Eval improvements: passed pawns, pawn structure, rook files, bishop pair, king safety — DONE
 1.x — Climb weekly. Every change CHP-verified. Every ELO delta logged.
 
 ================================================================================
@@ -339,3 +387,6 @@ CHANGE LOG
 2026-03-24 — v0.0.3 features added: Null Move Pruning, History Heuristic, SEE.
              50/50 benchmark pass (100%). All sigma gates pass.
              DD05, DD-HISTORY, DD-SEE all locked.
+2026-03-24 — v0.0.4 features added: Passed pawns, pawn structure, rook files, bishop pair, king safety.
+             50/50 benchmark pass (100%). All sigma gates pass.
+             DD-PASSED-PAWNS, DD-PAWN-STRUCTURE, DD-ROOK-FILES, DD-BISHOP-PAIR, DD-KING-SAFETY locked.

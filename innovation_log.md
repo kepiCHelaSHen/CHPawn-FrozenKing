@@ -219,3 +219,58 @@ Opponents reaching depth 14, CHPawn reaching depth 9. This session closes the ga
 - Clean build, all frozen values intact
 
 ### REPORT_v003.md WRITTEN — v0.0.3 BUILD COMPLETE
+
+---
+
+## 2026-03-24 — v0.0.4 COMPLETE: 5 Evaluation Improvements
+
+Context: CHPawn v0.0.3 plays bad in middlegame. Material + basic PST not enough against 2200.
+All sources published on chessprogramming.org. All CHP-verified.
+
+### Feature 1 — Passed Pawn Bonuses (DD-PASSED-PAWNS)
+- PASSED_PAWN_BONUS = [0, 10, 20, 30, 50, 75, 100, 0] (by rank)
+- is_passed_pawn(): checks same + adjacent files ahead for enemy pawns
+- Tests: 4 new (detected, blocked by adjacent, bonus increases, starting position)
+
+### Feature 2 — Pawn Structure Penalties (DD-PAWN-STRUCTURE)
+- DOUBLED_PAWN_PENALTY = -20 (per extra pawn on same file)
+- ISOLATED_PAWN_PENALTY = -15 (no friendly pawns on adjacent files)
+- Tests: 3 new (doubled, isolated, starting position)
+
+### Feature 3 — Rook on Open File (DD-ROOK-FILES)
+- ROOK_OPEN_FILE_BONUS = 25 (no pawns on file)
+- ROOK_SEMI_OPEN_FILE_BONUS = 10 (no friendly pawns, enemy pawns present)
+- Tests: 3 new (open file, semi-open, starting position)
+
+### Feature 4 — Bishop Pair Bonus (DD-BISHOP-PAIR)
+- BISHOP_PAIR_BONUS = 50 (side with 2+ bishops)
+- Tests: 2 new (applied, symmetric cancels)
+
+### Feature 5 — King Safety (DD-KING-SAFETY)
+- KING_SHIELD_BONUS = 10 (per shield pawn)
+- KING_ATTACKER_PENALTY = -10 (per adjacent enemy piece)
+- Only in middlegame (queens on board)
+- Tests: 3 new (shield, endgame disabled, symmetric)
+
+### Sigma Gates (50-position benchmark)
+- Gate 1: illegal_moves = 0 → PASS
+- Gate 2: pass_rate = 50/50 (100%) → PASS
+- Gate 3: pruning_rate = 100% → PASS
+- Gate 4: max_time = 4337ms → PASS
+- ALL SIGMA GATES PASSED
+
+### Test Suite
+- 80/80 tests pass (was 64 in v0.0.3, +16 new)
+- Zero regressions
+
+### Frozen Value Verification
+- BISHOP=300, KNIGHT=300 ✓
+- DELTA=200, MAX_EXTENSIONS=4 ✓
+- MCTS grep: 0 hits ✓
+- Neural grep: 0 hits ✓
+- No piece value drift ✓
+- All new constants verified by test
+
+### FALSE POSITIVES CAUGHT: None
+
+### REPORT_v004.md WRITTEN — v0.0.4 BUILD COMPLETE
