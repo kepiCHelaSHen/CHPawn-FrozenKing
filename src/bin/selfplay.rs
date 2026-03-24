@@ -1,7 +1,7 @@
 use shakmaty::{Chess, Color, Move, Position};
 use shakmaty::uci::Uci;
 use chpawn_frozen_king::movepick::MovePicker;
-use chpawn_frozen_king::search::{iterative_deepening, SearchStats};
+use chpawn_frozen_king::search::{iterative_deepening, zobrist_key};
 use chpawn_frozen_king::tablebase::TablebaseProber;
 use chpawn_frozen_king::time::TimeManager;
 use chpawn_frozen_king::tt::TranspositionTable;
@@ -32,7 +32,7 @@ fn main() {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let mut move_count = 0;
         let mut game_moves: Vec<String> = Vec::new();
-        let mut position_hashes: Vec<u64> = Vec::new();
+        let mut pos_history: Vec<u64> = vec![zobrist_key(&pos)];
 
         let result = loop {
             // Check for game-ending conditions
@@ -56,13 +56,11 @@ fn main() {
             }
 
             // 3-fold repetition detection
-            use shakmaty::zobrist::{ZobristHash, Zobrist64};
-            let hash = u64::from(pos.zobrist_hash::<Zobrist64>(shakmaty::EnPassantMode::Legal));
-            let rep_count = position_hashes.iter().filter(|&&h| h == hash).count();
+            let hash = zobrist_key(&pos);
+            let rep_count = pos_history.iter().filter(|&&h| h == hash).count();
             if rep_count >= 2 {
                 break "1/2-1/2"; // 3-fold repetition
             }
-            position_hashes.push(hash);
 
             // Draw by insufficient material (just kings)
             if pos.board().occupied().count() <= 2 {
@@ -80,7 +78,7 @@ fn main() {
 
             let mut noop = |_: u8, _: i32, _: u64, _: u64, _: &Move| {};
             let (_, best_move) = iterative_deepening(
-                &pos, 64, &tm, &mut tt, &mut picker, tb_ref, &mut noop,
+                &pos, 64, &tm, &mut tt, &mut picker, tb_ref, &pos_history, &mut noop,
             );
 
             if let Some(ref mv) = best_move {
@@ -98,6 +96,7 @@ fn main() {
 
                 game_moves.push(Uci::from_standard(mv).to_string());
                 pos.play_unchecked(mv);
+                pos_history.push(zobrist_key(&pos));
                 move_count += 1;
             } else {
                 // Engine couldn't find a move — shouldn't happen

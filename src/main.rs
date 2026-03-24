@@ -5,7 +5,7 @@ use shakmaty::{Chess, CastlingMode, Color, Move, Position};
 use shakmaty::fen::Fen;
 use shakmaty::uci::Uci;
 use chpawn_frozen_king::movepick::MovePicker;
-use chpawn_frozen_king::search::{iterative_deepening, SearchStats};
+use chpawn_frozen_king::search::{iterative_deepening, zobrist_key};
 use chpawn_frozen_king::tablebase::TablebaseProber;
 use chpawn_frozen_king::time::TimeManager;
 use chpawn_frozen_king::tt::TranspositionTable;
@@ -19,6 +19,7 @@ fn main() {
     let mut tt = TranspositionTable::new(DEFAULT_HASH_MB);
     let mut picker = MovePicker::new();
     let stop_flag = Arc::new(AtomicBool::new(false));
+    let mut pos_history: Vec<u64> = vec![zobrist_key(&Chess::default())];
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -55,6 +56,7 @@ fn main() {
                 position = Chess::default();
                 tt.clear();
                 picker.clear();
+                pos_history = vec![zobrist_key(&Chess::default())];
             }
             "setoption" => {
                 // setoption name Hash value <n>
@@ -63,7 +65,9 @@ fn main() {
                 }
             }
             "position" => {
-                position = parse_position(&tokens[1..]);
+                let (pos, history) = parse_position_with_history(&tokens[1..]);
+                position = pos;
+                pos_history = history;
             }
             "go" => {
                 stop_flag.store(false, Ordering::Relaxed);
@@ -104,7 +108,7 @@ fn main() {
 
                 let (_, best_move) = iterative_deepening(
                     &position, depth, &tm, &mut tt, &mut picker,
-                    tb_ref, &mut info_callback,
+                    tb_ref, &pos_history, &mut info_callback,
                 );
 
                 if let Some(ref mv) = best_move {
@@ -191,9 +195,11 @@ fn parse_setoption(tokens: &[&str]) -> Option<u64> {
     None
 }
 
-fn parse_position(tokens: &[&str]) -> Chess {
+fn parse_position_with_history(tokens: &[&str]) -> (Chess, Vec<u64>) {
     if tokens.is_empty() {
-        return Chess::default();
+        let pos = Chess::default();
+        let history = vec![zobrist_key(&pos)];
+        return (pos, history);
     }
 
     let (mut pos, moves_start) = if tokens[0] == "startpos" {
@@ -204,16 +210,25 @@ fn parse_position(tokens: &[&str]) -> Chess {
         let fen_str = tokens[1..moves_idx].join(" ");
         let fen: Fen = match fen_str.parse() {
             Ok(f) => f,
-            Err(_) => return Chess::default(),
+            Err(_) => {
+                let pos = Chess::default();
+                return (pos.clone(), vec![zobrist_key(&pos)]);
+            }
         };
         let pos: Chess = match fen.into_position(CastlingMode::Standard) {
             Ok(p) => p,
-            Err(_) => return Chess::default(),
+            Err(_) => {
+                let pos = Chess::default();
+                return (pos.clone(), vec![zobrist_key(&pos)]);
+            }
         };
         (pos, moves_idx)
     } else {
-        return Chess::default();
+        let pos = Chess::default();
+        return (pos.clone(), vec![zobrist_key(&pos)]);
     };
+
+    let mut history = vec![zobrist_key(&pos)];
 
     if moves_start < tokens.len() && tokens[moves_start] == "moves" {
         for &move_str in &tokens[moves_start + 1..] {
@@ -226,8 +241,9 @@ fn parse_position(tokens: &[&str]) -> Chess {
                 Err(_) => break,
             };
             pos.play_unchecked(&mv);
+            history.push(zobrist_key(&pos));
         }
     }
 
-    pos
+    (pos, history)
 }

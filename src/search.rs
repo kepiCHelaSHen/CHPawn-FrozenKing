@@ -9,13 +9,25 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 pub const MAX_DEPTH: u8 = 64;
-const BASE_DEPTH: u8 = 6;
 pub const DELTA: i32 = 200; // Frozen in spec.md
 const MAX_EXTENSIONS: u8 = 4; // Frozen in spec.md
 
 const INF: i32 = i32::MAX - 1;
 const NEG_INF: i32 = i32::MIN + 1;
-const MATE_THRESHOLD: i32 = CHECKMATE - 1000;
+
+/// Clamp scores to i16-safe range for TT storage.
+/// CHECKMATE=1_000_000 overflows i16 (max 32767). Scores above 32000
+/// are clamped to prevent TT corruption. Normal eval scores (~±4000) are unaffected.
+const TT_SCORE_MAX: i32 = 32000;
+
+fn score_to_tt(score: i32) -> i16 {
+    score.clamp(-TT_SCORE_MAX, TT_SCORE_MAX) as i16
+}
+
+/// Compute Zobrist hash for a position.
+pub fn zobrist_key(pos: &Chess) -> u64 {
+    u64::from(pos.zobrist_hash::<Zobrist64>(shakmaty::EnPassantMode::Legal))
+}
 
 // ============================================================================
 // Search Statistics
@@ -41,7 +53,8 @@ impl SearchStats {
 
 /// Top-level iterative deepening search.
 /// Returns (white-centric score, best move).
-/// Outputs UCI info lines to the provided writer.
+/// `history` contains Zobrist hashes of all game positions up to (but not including)
+/// the current position, for threefold repetition detection.
 pub fn iterative_deepening(
     pos: &Chess,
     max_depth: u8,
@@ -49,9 +62,14 @@ pub fn iterative_deepening(
     tt: &mut TranspositionTable,
     picker: &mut MovePicker,
     tb: Option<&TablebaseProber>,
+    history: &[u64],
     info_callback: &mut dyn FnMut(u8, i32, u64, u64, &Move),
 ) -> (i32, Option<Move>) {
     tt.increment_age();
+
+    // Build mutable search history: game history + positions visited during search
+    let mut search_history: Vec<u64> = history.to_vec();
+    search_history.push(zobrist_key(pos)); // include current position
 
     let mut best_move: Option<Move> = None;
     let mut best_score: i32 = 0;
@@ -60,7 +78,10 @@ pub fn iterative_deepening(
 
     for depth in 1..=depth_limit {
         let mut stats = SearchStats::new();
-        let (score, mv) = root_search(pos, depth as i32, tt, picker, tb, tm, &mut stats);
+        // Reset search history to game state for each iteration
+        search_history.truncate(history.len() + 1);
+        let (score, mv) = root_search(pos, depth as i32, tt, picker, tb, tm,
+                                       &mut search_history, &mut stats);
 
         // If search was stopped mid-iteration, keep previous result (unless depth 1)
         if tm.should_stop() && depth > 1 && mv.is_none() {
@@ -90,6 +111,7 @@ fn root_search(
     picker: &mut MovePicker,
     tb: Option<&TablebaseProber>,
     tm: &TimeManager,
+    history: &mut Vec<u64>,
     stats: &mut SearchStats,
 ) -> (i32, Option<Move>) {
     let moves = pos.legal_moves();
@@ -102,7 +124,7 @@ fn root_search(
     }
 
     // Get TT move for ordering
-    let zobrist = u64::from(pos.zobrist_hash::<Zobrist64>(shakmaty::EnPassantMode::Legal));
+    let zobrist = zobrist_key(pos);
     let tt_move = tt.probe(zobrist).map(|e| e.mv);
 
     let ordered = picker.order_moves(&moves, 0, tt_move);
@@ -116,26 +138,28 @@ fn root_search(
         let mut new_pos = pos.clone();
         new_pos.play_unchecked(m);
 
+        // Push child hash for repetition detection
+        let child_hash = zobrist_key(&new_pos);
+        history.push(child_hash);
+
         let score;
         if i == 0 {
-            // First move: full window
             score = -negamax(&new_pos, -beta, -alpha, depth - 1, 1, 0,
-                             tt, picker, tb, tm, stats);
+                             tt, picker, tb, tm, history, stats);
         } else {
-            // PVS: null window first
             let null_score = -negamax(&new_pos, -(alpha + 1), -alpha, depth - 1, 1, 0,
-                                      tt, picker, tb, tm, stats);
+                                      tt, picker, tb, tm, history, stats);
             if null_score > alpha && null_score < beta {
-                // Re-search with full window
                 score = -negamax(&new_pos, -beta, -alpha, depth - 1, 1, 0,
-                                 tt, picker, tb, tm, stats);
+                                 tt, picker, tb, tm, history, stats);
             } else {
                 score = null_score;
             }
         }
 
+        history.pop(); // restore history
+
         if tm.should_stop() {
-            // If we have at least one move, keep it
             if best_move.is_some() {
                 break;
             }
@@ -157,11 +181,11 @@ fn root_search(
         -best_score
     };
 
-    // Store in TT
+    // Store in TT (clamped to prevent i16 overflow on mate scores)
     let packed_mv = best_move.as_ref().map(|m| pack_move(m)).unwrap_or(0);
     let eval = evaluate(pos);
     let stm_eval = if pos.turn() == Color::White { eval } else { -eval };
-    tt.store(zobrist, depth as u8, best_score as i16, stm_eval as i16,
+    tt.store(zobrist, depth as u8, score_to_tt(best_score), score_to_tt(stm_eval),
              Bound::Exact, packed_mv, true);
 
     (white_score, best_move)
@@ -172,6 +196,7 @@ fn root_search(
 // ============================================================================
 
 /// Negamax search. Returns score from side-to-move's perspective.
+/// `history` tracks Zobrist hashes for threefold repetition detection.
 fn negamax(
     pos: &Chess,
     mut alpha: i32,
@@ -183,6 +208,7 @@ fn negamax(
     picker: &mut MovePicker,
     tb: Option<&TablebaseProber>,
     tm: &TimeManager,
+    history: &mut Vec<u64>,
     stats: &mut SearchStats,
 ) -> i32 {
     stats.node_count += 1;
@@ -190,6 +216,22 @@ fn negamax(
     // Time check every 2048 nodes
     if stats.node_count & 2047 == 0 && tm.should_stop() {
         return 0;
+    }
+
+    // Fifty-move rule — C2 fix
+    if pos.halfmoves() >= 100 {
+        return DRAW;
+    }
+
+    // Threefold repetition detection — C1 fix
+    // Current position hash is the last entry in history (pushed by caller)
+    if history.len() >= 2 {
+        let current_hash = *history.last().unwrap();
+        // Count how many times this hash appears in history (excluding the last entry itself)
+        let rep_count = history[..history.len() - 1].iter().filter(|&&h| h == current_hash).count();
+        if rep_count >= 2 {
+            return DRAW; // Threefold repetition
+        }
     }
 
     // Terminal node check
@@ -204,7 +246,6 @@ fn negamax(
     // Tablebase probe
     if let Some(tb) = tb {
         if let Some(tb_score) = tb.probe_wdl(pos) {
-            // Convert from white-centric to side-to-move perspective
             let stm_score = if pos.turn() == Color::White { tb_score } else { -tb_score };
             return stm_score;
         }
@@ -223,7 +264,7 @@ fn negamax(
     }
 
     // TT probe
-    let zobrist = u64::from(pos.zobrist_hash::<Zobrist64>(shakmaty::EnPassantMode::Legal));
+    let zobrist = zobrist_key(pos);
     let tt_move;
     if let Some(entry) = tt.probe(zobrist) {
         stats.tt_hits += 1;
@@ -261,23 +302,26 @@ fn negamax(
         let mut new_pos = pos.clone();
         new_pos.play_unchecked(m);
 
+        // Push child hash for repetition detection
+        let child_hash = zobrist_key(&new_pos);
+        history.push(child_hash);
+
         let score;
         if i == 0 {
-            // First move (PV): full window
             score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
-                             extensions, tt, picker, tb, tm, stats);
+                             extensions, tt, picker, tb, tm, history, stats);
         } else {
-            // PVS: null window [alpha, alpha+1]
             let null_score = -negamax(&new_pos, -(alpha + 1), -alpha, depth - 1,
-                                      ply + 1, extensions, tt, picker, tb, tm, stats);
+                                      ply + 1, extensions, tt, picker, tb, tm, history, stats);
             if null_score > alpha && null_score < beta {
-                // Re-search with full window
                 score = -negamax(&new_pos, -beta, -alpha, depth - 1, ply + 1,
-                                 extensions, tt, picker, tb, tm, stats);
+                                 extensions, tt, picker, tb, tm, history, stats);
             } else {
                 score = null_score;
             }
         }
+
+        history.pop(); // restore history
 
         if score > best_score {
             best_score = score;
@@ -289,7 +333,6 @@ fn negamax(
         }
 
         if alpha >= beta {
-            // Beta cutoff — store killer if quiet move
             if !m.is_capture() && !m.is_promotion() {
                 picker.store_killer(m, ply as u8);
             }
@@ -297,18 +340,18 @@ fn negamax(
         }
     }
 
-    // Store in TT
+    // Store in TT (clamped to prevent i16 overflow — C3 fix)
     let bound = if best_score >= beta {
-        Bound::Lower // Failed high (beta cutoff)
+        Bound::Lower
     } else if best_score <= original_alpha {
-        Bound::Upper // Failed low (all moves below alpha)
+        Bound::Upper
     } else {
-        Bound::Exact // PV node
+        Bound::Exact
     };
 
     let eval = evaluate(pos);
     let stm_eval = if pos.turn() == Color::White { eval } else { -eval };
-    tt.store(zobrist, depth as u8, best_score as i16, stm_eval as i16,
+    tt.store(zobrist, depth as u8, score_to_tt(best_score), score_to_tt(stm_eval),
              bound, best_move, bound == Bound::Exact);
 
     best_score
@@ -405,7 +448,8 @@ pub fn alpha_beta_search(
     let mut picker = MovePicker::new();
 
     let mut noop = |_: u8, _: i32, _: u64, _: u64, _: &Move| {};
-    iterative_deepening(pos, depth, &tm, &mut tt, &mut picker, tb, &mut noop)
+    let history: Vec<u64> = Vec::new();
+    iterative_deepening(pos, depth, &tm, &mut tt, &mut picker, tb, &history, &mut noop)
 }
 
 // ============================================================================
@@ -642,11 +686,13 @@ mod tests {
 
         // First search populates TT
         let mut noop = |_: u8, _: i32, _: u64, _: u64, _: &Move| {};
-        iterative_deepening(&pos, 4, &tm, &mut tt, &mut picker, None, &mut noop);
+        let history: Vec<u64> = Vec::new();
+        iterative_deepening(&pos, 4, &tm, &mut tt, &mut picker, None, &history, &mut noop);
 
         // Second search should get TT hits
         stats = SearchStats::new();
-        let _ = root_search(&pos, 4, &mut tt, &mut picker, None, &tm, &mut stats);
+        let mut search_history = vec![zobrist_key(&pos)];
+        let _ = root_search(&pos, 4, &mut tt, &mut picker, None, &tm, &mut search_history, &mut stats);
         assert!(stats.tt_hits > 0, "Should have TT hits on repeated search, got 0");
     }
 
@@ -658,7 +704,8 @@ mod tests {
         let mut tt = TranspositionTable::new(16);
         let mut picker = MovePicker::new();
         let mut noop = |_: u8, _: i32, _: u64, _: u64, _: &Move| {};
-        let (_, mv) = iterative_deepening(&pos, 4, &tm, &mut tt, &mut picker, None, &mut noop);
+        let history: Vec<u64> = Vec::new();
+        let (_, mv) = iterative_deepening(&pos, 4, &tm, &mut tt, &mut picker, None, &history, &mut noop);
         assert!(mv.is_some(), "Iterative deepening should return a move");
     }
 
