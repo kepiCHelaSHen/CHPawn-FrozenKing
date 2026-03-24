@@ -1,4 +1,5 @@
-use shakmaty::{Board, Chess, Color, File, Position, Rank, Role, Square};
+use shakmaty::{Bitboard, Board, Chess, Color, File, Position, Rank, Role, Square};
+use shakmaty::attacks;
 use crate::pst;
 
 // Frozen piece values per spec.md — DO NOT CHANGE
@@ -20,6 +21,15 @@ pub const ROOK_SEMI_OPEN_FILE_BONUS: i32 = 10;
 pub const BISHOP_PAIR_BONUS: i32 = 50;
 pub const KING_ATTACKER_PENALTY: i32 = -10;
 pub const KING_SHIELD_BONUS: i32 = 10;
+
+// v0.0.7 Evaluation Constants
+// Index: 0=none, 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king
+pub const MOBILITY_WEIGHT: [i32; 7] = [0, 1, 4, 4, 2, 1, 0];
+pub const KNIGHT_OUTPOST_BONUS: i32 = 30;
+pub const BISHOP_OUTPOST_BONUS: i32 = 20;
+pub const DOUBLED_ROOKS_BONUS: i32 = 20;
+pub const ROOK_SEVENTH_RANK_BONUS: i32 = 30;
+pub const UNDEVELOPED_PIECE_PENALTY: i32 = -10;
 
 /// Material value for a piece role.
 pub fn piece_value(role: Role) -> i32 {
@@ -277,6 +287,255 @@ fn evaluate_king_safety(board: &Board) -> i32 {
 }
 
 // ============================================================================
+// Feature 6 — Piece Mobility (v0.0.7)
+// Source: chessprogramming.org/Mobility
+// ============================================================================
+
+fn role_to_mobility_index(role: Role) -> usize {
+    match role {
+        Role::Pawn => 1,
+        Role::Knight => 2,
+        Role::Bishop => 3,
+        Role::Rook => 4,
+        Role::Queen => 5,
+        Role::King => 6,
+    }
+}
+
+/// Compute squares attacked by all pawns of a given color.
+fn pawn_attack_span(board: &Board, color: Color) -> Bitboard {
+    let mut result = Bitboard::EMPTY;
+    let pawns = board.pawns() & board.by_color(color);
+    for sq in pawns {
+        result = result | attacks::pawn_attacks(color, sq);
+    }
+    result
+}
+
+/// Evaluate piece mobility. Returns score from WHITE's perspective.
+fn evaluate_mobility(board: &Board) -> i32 {
+    let occupied = board.occupied();
+    let enemy_pawn_attacks_w = pawn_attack_span(board, Color::Black);
+    let enemy_pawn_attacks_b = pawn_attack_span(board, Color::White);
+    let mut score = 0i32;
+
+    // White pieces
+    let white_pieces = board.by_color(Color::White) & !(board.pawns() | board.kings());
+    for sq in white_pieces {
+        let role = board.role_at(sq).unwrap();
+        let atk = match role {
+            Role::Knight => attacks::knight_attacks(sq),
+            Role::Bishop => attacks::bishop_attacks(sq, occupied),
+            Role::Rook => attacks::rook_attacks(sq, occupied),
+            Role::Queen => attacks::queen_attacks(sq, occupied),
+            _ => Bitboard::EMPTY,
+        };
+        // Count safe squares: attacked squares not defended by enemy pawns
+        let safe = atk & !enemy_pawn_attacks_w;
+        let count = safe.count() as i32;
+        score += MOBILITY_WEIGHT[role_to_mobility_index(role)] * count;
+    }
+
+    // Black pieces
+    let black_pieces = board.by_color(Color::Black) & !(board.pawns() | board.kings());
+    for sq in black_pieces {
+        let role = board.role_at(sq).unwrap();
+        let atk = match role {
+            Role::Knight => attacks::knight_attacks(sq),
+            Role::Bishop => attacks::bishop_attacks(sq, occupied),
+            Role::Rook => attacks::rook_attacks(sq, occupied),
+            Role::Queen => attacks::queen_attacks(sq, occupied),
+            _ => Bitboard::EMPTY,
+        };
+        let safe = atk & !enemy_pawn_attacks_b;
+        let count = safe.count() as i32;
+        score -= MOBILITY_WEIGHT[role_to_mobility_index(role)] * count;
+    }
+
+    score
+}
+
+// ============================================================================
+// Feature 7 — Outpost Detection (v0.0.7)
+// Source: chessprogramming.org/Outpost
+// ============================================================================
+
+/// Check if a square is an outpost for the given color.
+fn is_outpost(board: &Board, sq: Square, color: Color) -> bool {
+    let rank = sq.rank() as i32;
+    let file = sq.file() as i32;
+
+    // Must be in enemy half
+    let in_enemy_half = match color {
+        Color::White => rank >= 4, // rank 5-8 (0-indexed: 4-7)
+        Color::Black => rank <= 3, // rank 1-4 (0-indexed: 0-3)
+    };
+    if !in_enemy_half { return false; }
+
+    // Must be defended by a friendly pawn
+    let friendly_pawns = board.pawns() & board.by_color(color);
+    let defended = match color {
+        Color::White => {
+            // A white pawn defends this square if it's on (file±1, rank-1)
+            if rank == 0 { return false; }
+            let mut defended = false;
+            for df in [-1i32, 1] {
+                let f = file + df;
+                if f < 0 || f > 7 { continue; }
+                let pawn_sq = Square::from_coords(File::new(f as u32), Rank::new((rank - 1) as u32));
+                if friendly_pawns.contains(pawn_sq) { defended = true; break; }
+            }
+            defended
+        }
+        Color::Black => {
+            if rank >= 7 { return false; }
+            let mut defended = false;
+            for df in [-1i32, 1] {
+                let f = file + df;
+                if f < 0 || f > 7 { continue; }
+                let pawn_sq = Square::from_coords(File::new(f as u32), Rank::new((rank + 1) as u32));
+                if friendly_pawns.contains(pawn_sq) { defended = true; break; }
+            }
+            defended
+        }
+    };
+    if !defended { return false; }
+
+    // No enemy pawns on adjacent files ahead that could attack this square
+    let enemy_pawns = board.pawns() & board.by_color(!color);
+    for f_offset in [-1i32, 1] {
+        let f = file + f_offset;
+        if f < 0 || f > 7 { continue; }
+        let check_file = File::new(f as u32);
+        let (start_rank, end_rank) = match color {
+            Color::White => (rank, 8), // ranks ahead for white
+            Color::Black => (0, rank + 1),
+        };
+        for r in start_rank..end_rank {
+            let check_sq = Square::from_coords(check_file, Rank::new(r as u32));
+            if enemy_pawns.contains(check_sq) { return false; }
+        }
+    }
+
+    true
+}
+
+/// Evaluate outpost bonuses. Returns score from WHITE's perspective.
+fn evaluate_outposts(board: &Board) -> i32 {
+    let mut score = 0i32;
+
+    for sq in board.by_color(Color::White) & !(board.pawns() | board.kings()) {
+        let role = board.role_at(sq).unwrap();
+        if is_outpost(board, sq, Color::White) {
+            match role {
+                Role::Knight => score += KNIGHT_OUTPOST_BONUS,
+                Role::Bishop => score += BISHOP_OUTPOST_BONUS,
+                _ => {}
+            }
+        }
+    }
+    for sq in board.by_color(Color::Black) & !(board.pawns() | board.kings()) {
+        let role = board.role_at(sq).unwrap();
+        if is_outpost(board, sq, Color::Black) {
+            match role {
+                Role::Knight => score -= KNIGHT_OUTPOST_BONUS,
+                Role::Bishop => score -= BISHOP_OUTPOST_BONUS,
+                _ => {}
+            }
+        }
+    }
+    score
+}
+
+// ============================================================================
+// Feature 8 — Rook Coordination (v0.0.7)
+// Source: chessprogramming.org/Connectivity
+// ============================================================================
+
+/// Evaluate rook coordination. Returns score from WHITE's perspective.
+fn evaluate_rook_coordination(board: &Board) -> i32 {
+    let mut score = 0i32;
+    let occupied = board.occupied();
+
+    // White rooks
+    let white_rooks = board.rooks() & board.by_color(Color::White);
+    let wr_squares: Vec<Square> = white_rooks.into_iter().collect();
+    // Doubled rooks: two on same file with clear line
+    if wr_squares.len() >= 2 {
+        for i in 0..wr_squares.len() {
+            for j in (i + 1)..wr_squares.len() {
+                if wr_squares[i].file() == wr_squares[j].file() {
+                    // Check if rook attacks can reach the other (clear line)
+                    let atk = attacks::rook_attacks(wr_squares[i], occupied);
+                    if atk.contains(wr_squares[j]) {
+                        score += DOUBLED_ROOKS_BONUS;
+                    }
+                }
+            }
+        }
+    }
+    // Rook on 7th rank
+    for sq in white_rooks {
+        if sq.rank() as i32 == 6 { // Rank 7 (0-indexed = 6)
+            score += ROOK_SEVENTH_RANK_BONUS;
+        }
+    }
+
+    // Black rooks
+    let black_rooks = board.rooks() & board.by_color(Color::Black);
+    let br_squares: Vec<Square> = black_rooks.into_iter().collect();
+    if br_squares.len() >= 2 {
+        for i in 0..br_squares.len() {
+            for j in (i + 1)..br_squares.len() {
+                if br_squares[i].file() == br_squares[j].file() {
+                    let atk = attacks::rook_attacks(br_squares[i], occupied);
+                    if atk.contains(br_squares[j]) {
+                        score -= DOUBLED_ROOKS_BONUS;
+                    }
+                }
+            }
+        }
+    }
+    for sq in black_rooks {
+        if sq.rank() as i32 == 1 { // Rank 2 (0-indexed = 1) — 7th for black
+            score -= ROOK_SEVENTH_RANK_BONUS;
+        }
+    }
+
+    score
+}
+
+// ============================================================================
+// Feature 9 — Development Penalty (v0.0.7)
+// Source: chessprogramming.org/Development
+// ============================================================================
+
+/// Evaluate development in opening phase. Returns score from WHITE's perspective.
+fn evaluate_development(pos: &Chess) -> i32 {
+    // Only apply in first 20 moves (halfmoves <= 40)
+    if pos.fullmoves().get() > 20 { return 0; }
+
+    let board = pos.board();
+    let mut score = 0i32;
+
+    // White undeveloped minor pieces (knights on b1/g1, bishops on c1/f1)
+    let white = board.by_color(Color::White);
+    if (board.knights() & white).contains(Square::B1) { score += UNDEVELOPED_PIECE_PENALTY; }
+    if (board.knights() & white).contains(Square::G1) { score += UNDEVELOPED_PIECE_PENALTY; }
+    if (board.bishops() & white).contains(Square::C1) { score += UNDEVELOPED_PIECE_PENALTY; }
+    if (board.bishops() & white).contains(Square::F1) { score += UNDEVELOPED_PIECE_PENALTY; }
+
+    // Black undeveloped minor pieces (knights on b8/g8, bishops on c8/f8)
+    let black = board.by_color(Color::Black);
+    if (board.knights() & black).contains(Square::B8) { score -= UNDEVELOPED_PIECE_PENALTY; }
+    if (board.knights() & black).contains(Square::G8) { score -= UNDEVELOPED_PIECE_PENALTY; }
+    if (board.bishops() & black).contains(Square::C8) { score -= UNDEVELOPED_PIECE_PENALTY; }
+    if (board.bishops() & black).contains(Square::F8) { score -= UNDEVELOPED_PIECE_PENALTY; }
+
+    score
+}
+
+// ============================================================================
 // Main Evaluation
 // ============================================================================
 
@@ -321,6 +580,18 @@ pub fn evaluate(pos: &Chess) -> i32 {
 
     // Feature 5 — King safety
     score += evaluate_king_safety(board);
+
+    // Feature 6 — Piece mobility
+    score += evaluate_mobility(board);
+
+    // Feature 7 — Outpost detection
+    score += evaluate_outposts(board);
+
+    // Feature 8 — Rook coordination
+    score += evaluate_rook_coordination(board);
+
+    // Feature 9 — Development penalty
+    score += evaluate_development(pos);
 
     score
 }
@@ -583,12 +854,100 @@ mod tests {
 
     #[test]
     fn material_values_unchanged_with_pst() {
-        // Verify material constants haven't drifted
         assert_eq!(piece_value(Role::Pawn), 100);
         assert_eq!(piece_value(Role::Knight), 300);
         assert_eq!(piece_value(Role::Bishop), 300);
         assert_eq!(piece_value(Role::Rook), 500);
         assert_eq!(piece_value(Role::Queen), 900);
         assert_eq!(piece_value(Role::King), 20000);
+    }
+
+    // === v0.0.7 Feature Tests ===
+
+    #[test]
+    fn mobility_weight_correct() {
+        assert_eq!(MOBILITY_WEIGHT, [0, 1, 4, 4, 2, 1, 0]);
+    }
+
+    #[test]
+    fn mobility_knight_center_vs_corner() {
+        // Knight in center has more mobility than knight in corner
+        let pos_center = pos_from_fen("4k3/8/8/8/4N3/8/8/4K3 w - - 0 1");
+        let pos_corner = pos_from_fen("4k3/8/8/8/8/8/8/N3K3 w - - 0 1");
+        let mob_center = evaluate_mobility(pos_center.board());
+        let mob_corner = evaluate_mobility(pos_corner.board());
+        assert!(mob_center > mob_corner,
+            "Knight center mobility ({}) should exceed corner ({})", mob_center, mob_corner);
+    }
+
+    #[test]
+    fn mobility_starting_near_zero() {
+        let pos = Chess::default();
+        let mob = evaluate_mobility(pos.board());
+        assert!(mob.abs() <= 5, "Starting position mobility should be near 0, got {}", mob);
+    }
+
+    #[test]
+    fn outpost_detected() {
+        // White knight on e5, white pawn on d4 defends, no black pawns on d/f ahead
+        let pos = pos_from_fen("4k3/8/8/4N3/3P4/8/8/4K3 w - - 0 1");
+        assert!(is_outpost(pos.board(), Square::E5, Color::White));
+    }
+
+    #[test]
+    fn outpost_blocked_by_enemy_pawn() {
+        // White knight on e5, but black pawn on d6 can attack
+        let pos = pos_from_fen("4k3/8/3p4/4N3/3P4/8/8/4K3 w - - 0 1");
+        assert!(!is_outpost(pos.board(), Square::E5, Color::White));
+    }
+
+    #[test]
+    fn outpost_constants_correct() {
+        assert_eq!(KNIGHT_OUTPOST_BONUS, 30);
+        assert_eq!(BISHOP_OUTPOST_BONUS, 20);
+    }
+
+    #[test]
+    fn rook_coordination_constants() {
+        assert_eq!(DOUBLED_ROOKS_BONUS, 20);
+        assert_eq!(ROOK_SEVENTH_RANK_BONUS, 30);
+    }
+
+    #[test]
+    fn rook_seventh_rank_bonus() {
+        // White rook on a7 (rank 7), kings away from rook
+        let pos = pos_from_fen("7k/R7/8/8/8/8/8/4K3 w - - 0 1");
+        let coord = evaluate_rook_coordination(pos.board());
+        assert!(coord >= ROOK_SEVENTH_RANK_BONUS,
+            "Rook on 7th rank should get bonus, got {}", coord);
+    }
+
+    #[test]
+    fn development_starting_symmetric() {
+        let pos = Chess::default();
+        assert_eq!(evaluate_development(&pos), 0);
+    }
+
+    #[test]
+    fn development_penalty_for_undeveloped() {
+        // White has developed, black hasn't — white should have advantage
+        let pos = pos_from_fen("rnbqkbnr/pppppppp/8/8/4P3/2N2N2/PPPP1PPP/R1BQKB1R b kq - 0 2");
+        let dev = evaluate_development(&pos);
+        assert!(dev > 0, "White developed should score positive, got {}", dev);
+    }
+
+    #[test]
+    fn development_constants_correct() {
+        assert_eq!(UNDEVELOPED_PIECE_PENALTY, -10);
+    }
+
+    #[test]
+    fn v007_constants_complete() {
+        assert_eq!(MOBILITY_WEIGHT, [0, 1, 4, 4, 2, 1, 0]);
+        assert_eq!(KNIGHT_OUTPOST_BONUS, 30);
+        assert_eq!(BISHOP_OUTPOST_BONUS, 20);
+        assert_eq!(DOUBLED_ROOKS_BONUS, 20);
+        assert_eq!(ROOK_SEVENTH_RANK_BONUS, 30);
+        assert_eq!(UNDEVELOPED_PIECE_PENALTY, -10);
     }
 }

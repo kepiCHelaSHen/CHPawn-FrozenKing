@@ -362,3 +362,35 @@ Context: CHPawn v0.0.4 has strong eval but still loses on depth. Tier 2 search i
 ### FALSE POSITIVES CAUGHT: None
 
 ### REPORT_v006.md WRITTEN — v0.0.6 BUILD COMPLETE
+
+---
+
+## 2026-03-24 — v0.0.7 COMPLETE: Eval Tier 2 — Mobility, Outposts, Rook Coord, Development
+
+### Feature 1 — Piece Mobility (DD-MOBILITY)
+- MOBILITY_WEIGHT = [0, 1, 4, 4, 2, 1, 0]
+- Count safe squares (not defended by enemy pawns) per piece
+- Uses shakmaty::attacks for bishop/rook/queen sliding attacks
+- Tests: 3 new (constants, center vs corner, starting near zero)
+
+### Feature 2 — Outpost Detection (DD-OUTPOST)
+- KNIGHT_OUTPOST_BONUS=30, BISHOP_OUTPOST_BONUS=20
+- Outpost: in enemy half, defended by friendly pawn, no enemy pawns on adjacent files ahead
+- Tests: 3 new (detected, blocked by enemy pawn, constants)
+
+### Feature 3 — Rook Coordination (DD-ROOK-COORD)
+- DOUBLED_ROOKS_BONUS=20, ROOK_SEVENTH_RANK_BONUS=30
+- Doubled rooks on same file with clear line
+- Rook on 7th rank bonus
+- Tests: 2 new (constants, 7th rank)
+
+### Feature 4 — Development Penalty (DD-DEVELOPMENT)
+- UNDEVELOPED_PIECE_PENALTY=-10
+- Penalize knights on b1/g1, bishops on c1/f1 in first 20 moves
+- Tests: 3 new (symmetric, undeveloped penalty, constants)
+
+### Sigma Gates: 50/50 (100%)
+### Tests: 106/106 pass. Zero warnings.
+### FALSE POSITIVES CAUGHT: None
+
+### REPORT_v007.md WRITTEN — v0.0.7 BUILD COMPLETE

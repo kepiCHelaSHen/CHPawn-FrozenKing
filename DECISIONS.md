@@ -388,6 +388,42 @@ Frozen spec: STABILITY_THRESHOLD = 3, STABILITY_BONUS = 0.5, INSTABILITY_PENALTY
 
 ---
 
+## DD-MOBILITY — Piece Mobility Evaluation
+Decision:   YES — DONE in v0.0.7
+Date:       2026-03-24
+Est. ELO:   +15-25
+Source:     chessprogramming.org/Mobility
+Frozen spec: MOBILITY_WEIGHT = [0, 1, 4, 4, 2, 1, 0]
+
+---
+
+## DD-OUTPOST — Outpost Detection
+Decision:   YES — DONE in v0.0.7
+Date:       2026-03-24
+Est. ELO:   +10-20
+Source:     chessprogramming.org/Outpost
+Frozen spec: KNIGHT_OUTPOST_BONUS = 30, BISHOP_OUTPOST_BONUS = 20
+
+---
+
+## DD-ROOK-COORD — Rook Coordination
+Decision:   YES — DONE in v0.0.7
+Date:       2026-03-24
+Est. ELO:   +5-10
+Source:     chessprogramming.org/Connectivity
+Frozen spec: DOUBLED_ROOKS_BONUS = 20, ROOK_SEVENTH_RANK_BONUS = 30
+
+---
+
+## DD-DEVELOPMENT — Development Penalty
+Decision:   YES — DONE in v0.0.7
+Date:       2026-03-24
+Est. ELO:   +5-10
+Source:     chessprogramming.org/Development
+Frozen spec: UNDEVELOPED_PIECE_PENALTY = -10, only in first 20 moves
+
+---
+
 ================================================================================
 VERSION 1.0 SUMMARY
 ================================================================================
@@ -398,6 +434,7 @@ Features v0.0.3: +DD05+DD-HISTORY+DD-SEE
 Features v0.0.4: +DD-PASSED-PAWNS+DD-PAWN-STRUCTURE+DD-ROOK-FILES+DD-BISHOP-PAIR+DD-KING-SAFETY
 Features v0.0.5: +DD-FUTILITY+DD-RAZOR+DD-LMR-LOG+DD-IID
 Features v0.0.6: +DD-COUNTERMOVE+DD-CAPTURE-HISTORY+DD-COMPLEXITY-TIME
+Features v0.0.7: +DD-MOBILITY+DD-OUTPOST+DD-ROOK-COORD+DD-DEVELOPMENT
 Deferred: none
 
 ELO estimate:
@@ -437,6 +474,7 @@ ITERATION ROADMAP
 0.0.4 — Eval improvements: passed pawns, pawn structure, rook files, bishop pair, king safety — DONE
 0.0.5 — Search efficiency: futility pruning, razoring, log LMR, IID — DONE
 0.0.6 — Move ordering + time: countermove, capture history, complexity time — DONE
+0.0.7 — Eval Tier 2: mobility, outposts, rook coordination, development — DONE
 1.x — Climb weekly. Every change CHP-verified. Every ELO delta logged.
 
 ================================================================================
@@ -463,3 +501,4 @@ CHANGE LOG
              DD-FUTILITY, DD-RAZOR, DD-LMR-LOG, DD-IID locked. Dead code cleaned up.
 2026-03-24 — v0.0.6 features added: Countermove heuristic, Capture history, Complexity time.
              50/50 benchmark pass (100%). Zero warnings. All sigma gates pass.
+2026-03-24 — v0.0.7 features added: Mobility, Outposts, Rook Coordination, Development. 50/50 benchmark. Zero warnings.
