@@ -19,6 +19,14 @@ path = "src/bin/benchmark.rs"
 name = "selfplay"
 path = "src/bin/selfplay.rs"
 
+[[bin]]
+name = "perft"
+path = "src/bin/perft.rs"
+
+[[bin]]
+name = "eval_compare"
+path = "src/bin/eval_compare.rs"
+
 [dependencies]
 shakmaty = { version = "0.26", features = ["variant"] }
 shakmaty-syzygy = "0.24"
