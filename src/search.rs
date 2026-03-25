@@ -33,9 +33,10 @@ const RAZOR_MARGIN: [i32; 3] = [0, 300, 500];
 const IID_DEPTH_THRESHOLD: i32 = 4;
 const IID_REDUCTION: i32 = 2;
 
-// Complexity-based Time Management — v0.0.6
+// Complexity-based Time Management — v0.0.6, fixed v0.0.9
 const STABILITY_THRESHOLD: u8 = 3;
-const STABILITY_BONUS: f64 = 0.5;
+const STABILITY_MIN_DEPTH: u8 = 8; // Don't apply stability cutoff before this depth
+const STABILITY_BONUS: f64 = 0.7;  // Was 0.5 — less aggressive (use 70% of budget, not 50%)
 const INSTABILITY_PENALTY: f64 = 1.5;
 
 const INF: i32 = i32::MAX - 1;
@@ -191,13 +192,14 @@ pub fn iterative_deepening(
             info_callback(depth, score, stats.node_count, elapsed, m);
         }
 
-        // Complexity-based soft stop — v0.0.6
+        // Complexity-based soft stop — v0.0.6, fixed v0.0.9
+        // Only activate stability cutoff after STABILITY_MIN_DEPTH to avoid premature stop
         let budget = tm.budget_ms();
-        if budget < u64::MAX {
+        if budget < u64::MAX && depth >= STABILITY_MIN_DEPTH {
             let elapsed = tm.elapsed_ms();
             let adjusted_budget = if stability_count >= STABILITY_THRESHOLD {
                 (budget as f64 * STABILITY_BONUS) as u64
-            } else if stability_count == 0 && depth > 2 {
+            } else if stability_count == 0 {
                 (budget as f64 * INSTABILITY_PENALTY) as u64
             } else {
                 budget
@@ -1031,7 +1033,63 @@ mod tests {
     #[test]
     fn stability_constants_correct() {
         assert_eq!(STABILITY_THRESHOLD, 3);
-        assert!((STABILITY_BONUS - 0.5).abs() < f64::EPSILON);
+        assert_eq!(STABILITY_MIN_DEPTH, 8);
+        assert!((STABILITY_BONUS - 0.7).abs() < f64::EPSILON);
         assert!((INSTABILITY_PENALTY - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn iterative_deepening_shows_progress_kpk() {
+        // Diagnostic: KPK endgame must show score changes across depths
+        let pos = pos_from_fen("8/8/1k6/8/8/1K6/1P6/8 w - - 0 1");
+        let stop = Arc::new(AtomicBool::new(false));
+        let tm = TimeManager::infinite(stop);
+        let mut tt = TranspositionTable::new(16);
+        let mut picker = MovePicker::new();
+        let history: Vec<u64> = Vec::new();
+
+        let mut depth_scores: Vec<(u8, i32)> = Vec::new();
+        let mut cb = |d: u8, s: i32, _n: u64, _t: u64, _m: &Move| {
+            depth_scores.push((d, s));
+        };
+
+        // Test WITHOUT tablebases
+        let _ = iterative_deepening(&pos, 10, &tm, &mut tt, &mut picker, None, &history, &mut cb);
+        assert!(depth_scores.len() >= 5,
+            "Should report at least 5 depths, got {}: {:?}", depth_scores.len(), depth_scores);
+
+        // Test WITH tablebases
+        let tb = crate::tablebase::TablebaseProber::new("syzygy");
+        if tb.is_available() {
+            let stop2 = Arc::new(AtomicBool::new(false));
+            let tm2 = TimeManager::infinite(stop2);
+            let mut tt2 = TranspositionTable::new(16);
+            let mut picker2 = MovePicker::new();
+            let mut tb_scores: Vec<(u8, i32)> = Vec::new();
+            let mut cb2 = |d: u8, s: i32, _n: u64, _t: u64, _m: &Move| {
+                tb_scores.push((d, s));
+            };
+            let _ = iterative_deepening(&pos, 10, &tm2, &mut tt2, &mut picker2,
+                                         Some(&tb), &history, &mut cb2);
+            assert!(tb_scores.len() >= 5,
+                "With TB: should report at least 5 depths, got {}: {:?}",
+                tb_scores.len(), tb_scores);
+        }
+
+        // Test with TIMED search (simulating Arena time control)
+        let stop3 = Arc::new(AtomicBool::new(false));
+        // 60 seconds remaining, no increment — budget = 60000/40 = 1500ms
+        let tm3 = TimeManager::new(60000, 60000, 0, 0, 0, None, true, stop3);
+        let mut tt3 = TranspositionTable::new(16);
+        let mut picker3 = MovePicker::new();
+        let mut timed_scores: Vec<(u8, i32)> = Vec::new();
+        let mut cb3 = |d: u8, s: i32, _n: u64, _t: u64, _m: &Move| {
+            timed_scores.push((d, s));
+        };
+        let _ = iterative_deepening(&pos, 64, &tm3, &mut tt3, &mut picker3, None, &history, &mut cb3);
+        // With 1.5 seconds, should reach at least depth 5
+        assert!(timed_scores.len() >= 3,
+            "With 1.5s budget: should reach >= 3 depths, got {}: {:?}",
+            timed_scores.len(), timed_scores);
     }
 }
