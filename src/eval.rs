@@ -31,6 +31,18 @@ pub const DOUBLED_ROOKS_BONUS: i32 = 20;
 pub const ROOK_SEVENTH_RANK_BONUS: i32 = 30;
 pub const UNDEVELOPED_PIECE_PENALTY: i32 = -10;
 
+// v0.1.0 Evaluation Constants
+pub const BACKWARD_PAWN_PENALTY: i32 = -25;
+pub const SPACE_WEIGHT: i32 = 2;
+
+// Game phase constants for tapered eval
+pub const PHASE_KNIGHT: i32 = 1;
+pub const PHASE_BISHOP: i32 = 1;
+pub const PHASE_ROOK: i32 = 2;
+pub const PHASE_QUEEN: i32 = 4;
+pub const PHASE_MAX: i32 = 24; // 2Q + 4R + 4B + 4N
+pub const PHASE_ENDGAME_THRESHOLD: i32 = 8;
+
 /// Material value for a piece role.
 pub fn piece_value(role: Role) -> i32 {
     match role {
@@ -41,6 +53,20 @@ pub fn piece_value(role: Role) -> i32 {
         Role::Queen => QUEEN,
         Role::King => KING,
     }
+}
+
+/// Compute game phase from piece counts. Higher = more middlegame.
+pub fn game_phase(board: &Board) -> i32 {
+    let phase = (board.knights().count() as i32) * PHASE_KNIGHT
+        + (board.bishops().count() as i32) * PHASE_BISHOP
+        + (board.rooks().count() as i32) * PHASE_ROOK
+        + (board.queens().count() as i32) * PHASE_QUEEN;
+    phase.min(PHASE_MAX)
+}
+
+/// Endgame detection using game phase.
+pub fn is_endgame(board: &Board) -> bool {
+    game_phase(board) <= PHASE_ENDGAME_THRESHOLD
 }
 
 /// PST lookup for a piece on a square.
@@ -208,8 +234,8 @@ fn evaluate_rook_files(board: &Board) -> i32 {
 /// Evaluate king safety. Only in middlegame (queens on board).
 /// Returns score from WHITE's perspective.
 fn evaluate_king_safety(board: &Board) -> i32 {
-    // Only apply in middlegame
-    if board.queens().count() == 0 {
+    // Only apply in middlegame (not endgame)
+    if is_endgame(board) {
         return 0;
     }
 
@@ -536,6 +562,104 @@ fn evaluate_development(pos: &Chess) -> i32 {
 }
 
 // ============================================================================
+// Feature 10 — Backward Pawn Penalty (v0.1.0)
+// Source: chessprogramming.org/Backward_Pawn
+// ============================================================================
+
+/// A backward pawn can't be defended by friendly pawns and its stop square is
+/// controlled by an enemy pawn.
+fn is_backward_pawn(board: &Board, sq: Square, color: Color) -> bool {
+    let file = sq.file() as i32;
+    let rank = sq.rank() as i32;
+    let friendly_pawns = board.pawns() & board.by_color(color);
+
+    // Check: no friendly pawn on adjacent files that is behind (could advance to defend)
+    let mut has_defender = false;
+    for df in [-1i32, 1] {
+        let f = file + df;
+        if f < 0 || f > 7 { continue; }
+        for sq2 in friendly_pawns {
+            if sq2.file() as i32 == f {
+                let r2 = sq2.rank() as i32;
+                // Friendly pawn is behind or equal (could advance to defend)
+                let behind = match color {
+                    Color::White => r2 <= rank,
+                    Color::Black => r2 >= rank,
+                };
+                if behind { has_defender = true; break; }
+            }
+        }
+        if has_defender { break; }
+    }
+    if has_defender { return false; }
+
+    // Check: stop square (one ahead) is attacked by enemy pawn
+    let stop_rank = match color {
+        Color::White => rank + 1,
+        Color::Black => rank - 1,
+    };
+    if stop_rank < 0 || stop_rank > 7 { return false; }
+
+    let stop_sq = Square::from_coords(File::new(file as u32), Rank::new(stop_rank as u32));
+    let enemy_pawn_atk = pawn_attack_span(board, !color);
+    enemy_pawn_atk.contains(stop_sq)
+}
+
+/// Evaluate backward pawns. Returns score from WHITE's perspective.
+fn evaluate_backward_pawns(board: &Board) -> i32 {
+    let mut score = 0i32;
+    let white_pawns = board.pawns() & board.by_color(Color::White);
+    let black_pawns = board.pawns() & board.by_color(Color::Black);
+
+    for sq in white_pawns {
+        if is_backward_pawn(board, sq, Color::White) {
+            score += BACKWARD_PAWN_PENALTY;
+        }
+    }
+    for sq in black_pawns {
+        if is_backward_pawn(board, sq, Color::Black) {
+            score -= BACKWARD_PAWN_PENALTY;
+        }
+    }
+    score
+}
+
+// ============================================================================
+// Feature 11 — Space Advantage (v0.1.0)
+// Source: chessprogramming.org/Space
+// ============================================================================
+
+/// Evaluate space advantage. Returns score from WHITE's perspective.
+fn evaluate_space(board: &Board) -> i32 {
+    let white_pawns = board.pawns() & board.by_color(Color::White);
+    let black_pawns = board.pawns() & board.by_color(Color::Black);
+    let enemy_pawn_atk_w = pawn_attack_span(board, Color::Black);
+    let enemy_pawn_atk_b = pawn_attack_span(board, Color::White);
+
+    // White space: squares attacked by white pawns on ranks 3-5 (index 2-4), not attacked by enemy pawns
+    let mut white_space = 0i32;
+    for sq in white_pawns {
+        let r = sq.rank() as i32;
+        if r >= 2 && r <= 4 { // ranks 3-5
+            let atk = attacks::pawn_attacks(Color::White, sq);
+            white_space += (atk & !enemy_pawn_atk_w).count() as i32;
+        }
+    }
+
+    // Black space: squares attacked by black pawns on ranks 4-6 (index 3-5)
+    let mut black_space = 0i32;
+    for sq in black_pawns {
+        let r = sq.rank() as i32;
+        if r >= 3 && r <= 5 { // ranks 4-6
+            let atk = attacks::pawn_attacks(Color::Black, sq);
+            black_space += (atk & !enemy_pawn_atk_b).count() as i32;
+        }
+    }
+
+    (white_space - black_space) * SPACE_WEIGHT
+}
+
+// ============================================================================
 // Main Evaluation
 // ============================================================================
 
@@ -545,8 +669,8 @@ fn evaluate_development(pos: &Chess) -> i32 {
 pub fn evaluate(pos: &Chess) -> i32 {
     let board = pos.board();
 
-    // Endgame detection: no queens on the board
-    let endgame = board.queens().count() == 0;
+    // Endgame detection using game phase (v0.1.0 — tapered)
+    let endgame = is_endgame(board);
 
     let mut score: i32 = 0;
 
@@ -592,6 +716,12 @@ pub fn evaluate(pos: &Chess) -> i32 {
 
     // Feature 9 — Development penalty
     score += evaluate_development(pos);
+
+    // Feature 10 — Backward pawn penalty
+    score += evaluate_backward_pawns(board);
+
+    // Feature 11 — Space advantage
+    score += evaluate_space(board);
 
     score
 }
@@ -949,5 +1079,76 @@ mod tests {
         assert_eq!(DOUBLED_ROOKS_BONUS, 20);
         assert_eq!(ROOK_SEVENTH_RANK_BONUS, 30);
         assert_eq!(UNDEVELOPED_PIECE_PENALTY, -10);
+    }
+
+    // === v0.1.0 Feature Tests ===
+
+    #[test]
+    fn backward_pawn_detected() {
+        // White pawn on e3, black pawn on d5 — d5 attacks e4 (stop square of e3)
+        // No white pawns on d or f files to defend e3
+        let pos = pos_from_fen("4k3/8/8/3p4/8/4P3/8/4K3 w - - 0 1");
+        assert!(is_backward_pawn(pos.board(), Square::E3, Color::White));
+    }
+
+    #[test]
+    fn backward_pawn_not_when_defender_exists() {
+        // White pawn on e3 with white pawn on d3 — d3 is behind/equal, can defend
+        let pos = pos_from_fen("4k3/8/8/3p4/8/3PP3/8/4K3 w - - 0 1");
+        assert!(!is_backward_pawn(pos.board(), Square::E3, Color::White));
+    }
+
+    #[test]
+    fn starting_position_no_backward_pawns() {
+        let pos = Chess::default();
+        assert_eq!(evaluate_backward_pawns(pos.board()), 0);
+    }
+
+    #[test]
+    fn backward_pawn_penalty_correct() {
+        assert_eq!(BACKWARD_PAWN_PENALTY, -25);
+    }
+
+    #[test]
+    fn space_weight_correct() {
+        assert_eq!(SPACE_WEIGHT, 2);
+    }
+
+    #[test]
+    fn space_starting_near_zero() {
+        let pos = Chess::default();
+        let space = evaluate_space(pos.board());
+        assert!(space.abs() <= 5, "Starting space should be near 0, got {}", space);
+    }
+
+    #[test]
+    fn game_phase_starting_is_max() {
+        let pos = Chess::default();
+        assert_eq!(game_phase(pos.board()), PHASE_MAX);
+    }
+
+    #[test]
+    fn game_phase_kqk_is_endgame() {
+        let pos = pos_from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+        assert_eq!(game_phase(pos.board()), PHASE_QUEEN); // 4
+        assert!(is_endgame(pos.board()));
+    }
+
+    #[test]
+    fn game_phase_queens_few_pieces_is_endgame() {
+        // Queens but no other pieces — phase = 8 (2 queens), still endgame
+        let pos = pos_from_fen("3qk3/8/8/8/8/8/8/3QK3 w - - 0 1");
+        assert_eq!(game_phase(pos.board()), 8);
+        assert!(is_endgame(pos.board()));
+    }
+
+    #[test]
+    fn phase_constants_correct() {
+        assert_eq!(PHASE_KNIGHT, 1);
+        assert_eq!(PHASE_BISHOP, 1);
+        assert_eq!(PHASE_ROOK, 2);
+        assert_eq!(PHASE_QUEEN, 4);
+        assert_eq!(PHASE_MAX, 24);
+        assert_eq!(PHASE_ENDGAME_THRESHOLD, 8);
     }
 }
